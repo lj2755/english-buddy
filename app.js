@@ -330,7 +330,9 @@ ${mistakes}`;
     let ready = 0;
     const onReady = () => { if (++ready === 2) stage.classList.add('has-video'); };
     [idle, talk].forEach(v => {
-      v.addEventListener('canplaythrough', onReady, { once: true });
+      // La librería de IA tarda en cargar: el video puede estar listo antes que este código.
+      if (v.readyState >= 3) onReady();
+      else v.addEventListener('canplay', onReady, { once: true });
       v.addEventListener('error', () => stage.classList.remove('has-video'));
     });
     const play = v => v.play().catch(() => {});
