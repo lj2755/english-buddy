@@ -147,13 +147,22 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
     try { return JSON.stringify(e) !== '{}' ? JSON.stringify(e) : String(e); } catch { return String(e); }
   }
 
+  // ¿Parece una respuesta de verdad? (con números f16 rotos el modelo escribe basura)
+  function looksValid(text, format) {
+    let reply = text;
+    if (format) {
+      try { reply = JSON.parse(text.match(/\{[\s\S]*\}/)[0]).reply; } catch { reply = earlyReply(text); }
+    }
+    return typeof reply === 'string' && /[a-z]{2,}.*[a-z]{2,}/i.test(reply) && new Set(reply.toLowerCase()).size > 6;
+  }
+
   // Una sola generación con la configuración actual.
   async function generate(messages, { format, onChunk }) {
     const eng = await ensureEngine();
     const grammar = format && !prefs.noGrammar;
     const msgs = messages.map(m => ({ ...m }));
     if (format && !grammar) msgs[0].content += '\nAnswer ONLY with that JSON object, nothing before or after it.';
-    const req = { messages: msgs, stream: true, temperature: 0.5, max_tokens: 600, extra_body: { enable_thinking: false } };
+    const req = { messages: msgs, stream: true, temperature: 0.5, max_tokens: 400, extra_body: { enable_thinking: false } };
     if (grammar) req.response_format = { type: 'json_object', schema: JSON.stringify(format) };
     let text = '', first = 0, tokens = 0;
     const t0 = Date.now();
@@ -174,7 +183,12 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
     if (timedOut && !text) throw new Error('La IA tardó demasiado en responder. Prueba un modelo más liviano en Ajustes.');
     const secs = (Date.now() - t0 - first) / 1000;
     log(`Respuesta completa: ${tokens} piezas en ${((Date.now() - t0) / 1000).toFixed(1)} s (${secs > 0 ? (tokens / secs).toFixed(1) : '?'} por segundo)`);
-    return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    const clean = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    if (!looksValid(clean, format)) {
+      log('Respuesta sin sentido: ' + JSON.stringify(clean.slice(0, 80)));
+      throw new Error('respuesta sin sentido');
+    }
+    return clean;
   }
 
   // Si falla, prueba configuraciones más compatibles y recuerda la que funcionó:
@@ -188,6 +202,18 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
           log('Falló la generación: ' + errText(e) + (e?.stack ? ' | ' + String(e.stack).split('\n')[1]?.trim() : ''));
           if (/tardó demasiado/.test(e?.message || '')) throw e;
           loadedId = null; // el motor puede quedar dañado tras un error: se recarga
+          const msg = errText(e);
+          if (f16 && /sin sentido|Grammar matcher|NaN/i.test(msg)) {
+            prefs.forceF32 = true; f16 = false; savePrefs();
+            log('Los números f16 de esta GPU fallan: cambio al modelo sin f16');
+            continue;
+          }
+          if (/memory|out of|device (was )?lost|allocation/i.test(msg) && prefs.model !== 'Qwen3.5-2B') {
+            prefs.model = 'Qwen3.5-2B'; savePrefs();
+            $('modelSel').value = prefs.model;
+            log('Falta memoria: cambio a Qwen3.5 2B');
+            continue;
+          }
           if (opts.format && !prefs.noGrammar) {
             prefs.noGrammar = true; savePrefs();
             log('Reintentando sin formato fijo');
@@ -587,7 +613,13 @@ ${mistakes}`;
       $('startBtn').disabled = true;
       return false;
     }
-    f16 = adapter.features.has('shader-f16') && !prefs.forceF32;
+    // En GPU Qualcomm Adreno el modo f16 de WebLLM genera texto sin sentido: se usa f32.
+    const adreno = /qualcomm|adreno/i.test(`${adapter.info?.vendor} ${adapter.info?.architecture}`);
+    if (prefs.fixVersion !== 2) {
+      delete prefs.noGrammar; delete prefs.noWorker; delete prefs.forceF32;
+      prefs.fixVersion = 2; savePrefs();
+    }
+    f16 = adapter.features.has('shader-f16') && !prefs.forceF32 && !adreno;
     log(`GPU: ${adapter.info?.vendor || '?'} ${adapter.info?.architecture || ''} · f16=${f16} · ${navigator.userAgent.match(/Chrome\/[\d.]+/)?.[0] || ''}`);
     navigator.storage?.persist?.().catch(() => {}); // que Chrome no borre el modelo descargado
     const cached = await webllm.hasModelInCache(modelId(prefs.model)).catch(() => false);
