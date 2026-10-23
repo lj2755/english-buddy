@@ -1,0 +1,11 @@
+{
+  "name": "English Buddy",
+  "short_name": "Mia",
+  "description": "Practica inglés conversacional con Mia, con la IA funcionando dentro de tu celular.",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0c0b16",
+  "theme_color": "#0c0b16",
+  "icons": [{ "src": "icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }]
+}
