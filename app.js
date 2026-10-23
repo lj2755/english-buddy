@@ -649,8 +649,49 @@ ${mistakes}`;
     send(v);
   });
 
+  // ---------- Modelos descargados (Ajustes) ----------
+  const gb = bytes => (bytes / 1e9).toFixed(1).replace('.', ',') + ' GB';
+  async function renderCachedModels() {
+    const list = $('cachedList');
+    const est = await navigator.storage?.estimate?.().catch(() => null);
+    $('storageLine').textContent = est
+      ? `Esta app ocupa ${gb(est.usage || 0)} en tu celular.`
+      : 'Estos son los modelos guardados en tu celular.';
+    const found = [];
+    for (const m of MODELS) {
+      for (const q of ['q4f16_1', 'q4f32_1']) {
+        const id = `${m.base}-${q}-MLC`;
+        if (await webllm.hasModelInCache(id).catch(() => false)) found.push({ id, m, q });
+      }
+    }
+    list.innerHTML = '';
+    if (!found.length) { list.append(el('li', 'empty', 'No hay modelos descargados.')); return; }
+    const current = modelId(prefs.model);
+    for (const { id, m, q } of found) {
+      const li = el('li');
+      const name = el('span', '', m.label);
+      name.append(el('small', '', q === 'q4f16_1' ? 'versión f16' : 'versión f32'));
+      li.append(name);
+      if (id === current || id === loadedId) {
+        li.append(el('span', 'in-use', 'En uso'));
+      } else {
+        const btn = el('button', '', 'Borrar');
+        btn.type = 'button';
+        btn.addEventListener('click', async () => {
+          if (!btn.classList.contains('sure')) { btn.classList.add('sure'); btn.textContent = '¿Seguro? Borrar'; return; }
+          btn.disabled = true; btn.textContent = 'Borrando…';
+          try { await webllm.deleteModelAllInfoInCache(id); log('Modelo borrado: ' + id); }
+          catch (e) { log('No se pudo borrar ' + id + ': ' + errText(e)); }
+          renderCachedModels();
+        });
+        li.append(btn);
+      }
+      list.append(li);
+    }
+  }
+
   const dlg = $('settings');
-  function openSettings() { renderMemory(); dlg.showModal(); }
+  function openSettings() { renderMemory(); renderCachedModels(); dlg.showModal(); }
   $('settingsBtn').addEventListener('click', openSettings);
   $('scenarioChip').addEventListener('click', openSettings);
   $('closeSettings').addEventListener('click', () => dlg.close());

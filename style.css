@@ -234,3 +234,10 @@ dialog::backdrop { background: rgba(0,0,0,.55); }
 .primary:disabled { opacity: .55; cursor: progress; }
 body[data-busy] .mic, body[data-busy] .send { opacity: .5; }
 .diag { margin: 0; max-height: 200px; overflow: auto; padding: 10px; border-radius: 10px; background: var(--ink); border: 1px solid var(--line); color: var(--muted); font: 12px/1.45 ui-monospace, "SFMono-Regular", Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.models { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+.models li { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.models li span { min-width: 0; }
+.models small { color: var(--muted); display: block; }
+.models button { border: 1px solid rgba(255,155,134,.4); background: transparent; color: var(--fix); border-radius: 8px; padding: 6px 10px; font-size: 13px; white-space: nowrap; }
+.models button.sure { background: var(--fix); color: #2a0d07; }
+.models .in-use { color: var(--good); font-size: 13px; white-space: nowrap; }
