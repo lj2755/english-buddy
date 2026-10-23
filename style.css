@@ -233,3 +233,4 @@ dialog::backdrop { background: rgba(0,0,0,.55); }
 .progress-text { margin: 0; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .primary:disabled { opacity: .55; cursor: progress; }
 body[data-busy] .mic, body[data-busy] .send { opacity: .5; }
+.diag { margin: 0; max-height: 200px; overflow: auto; padding: 10px; border-radius: 10px; background: var(--ink); border: 1px solid var(--line); color: var(--muted); font: 12px/1.45 ui-monospace, "SFMono-Regular", Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -47,12 +47,30 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
   const saveMemory = () => store('ebm-memory', memory);
 
   // ---------- Estado visual ----------
+  // ---------- Diagnóstico (Ajustes → Diagnóstico) ----------
+  const diag = [];
+  function log(msg) {
+    const line = new Date().toLocaleTimeString('es', { hour12: false }) + '  ' + msg;
+    diag.push(line);
+    if (diag.length > 60) diag.shift();
+    console.log('[EB]', msg);
+    const pre = document.getElementById('diagLog');
+    if (pre) pre.textContent = diag.join('\n');
+  }
+  addEventListener('error', e => log('Error: ' + (e.message || e)));
+  addEventListener('unhandledrejection', e => log('Error: ' + (e.reason?.message || e.reason)));
+
   const STATUS = { idle: 'en línea', listening: 'escuchando…', thinking: 'pensando…', speaking: 'hablando' };
-  let state = 'idle';
+  let state = 'idle', thinkTimer = 0;
   function setState(s) {
     state = s;
     document.body.dataset.state = s;
     $('statusText').textContent = STATUS[s];
+    clearInterval(thinkTimer);
+    if (s === 'thinking') {
+      const t0 = Date.now();
+      thinkTimer = setInterval(() => { $('statusText').textContent = `pensando… ${Math.round((Date.now() - t0) / 1000)} s`; }, 1000);
+    }
   }
 
   // ---------- Ollama ----------
@@ -96,6 +114,8 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
     if (loading) return loading;
     loading = (async () => {
       const cached = await webllm.hasModelInCache(id).catch(() => false);
+      const t0 = Date.now();
+      log(`Cargando modelo ${id} (f16=${f16}, ${cached ? 'ya descargado' : 'descargando'})`);
       const onProgress = r => showProgress(r.progress || 0,
         cached ? `Cargando a Mia en la memoria… ${Math.round((r.progress || 0) * 100)}%`
                : `Descargando el modelo (solo la primera vez, usa Wi-Fi)… ${Math.round((r.progress || 0) * 100)}%`);
@@ -107,10 +127,13 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
         await engine.reload(id);
       }
       loadedId = id;
+      log(`Modelo listo en ${Math.round((Date.now() - t0) / 1000)} s`);
       $('progress').hidden = true;
       return engine;
     })();
-    try { return await loading; } finally { loading = null; }
+    try { return await loading; }
+    catch (e) { log('Falló la carga del modelo: ' + e.message); throw e; }
+    finally { loading = null; }
   }
 
   function llmChat(messages, { format, onChunk } = {}) {
@@ -118,11 +141,25 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
       const eng = await ensureEngine();
       const req = { messages, stream: true, temperature: 0.5, max_tokens: 600, extra_body: { enable_thinking: false } };
       if (format) req.response_format = { type: 'json_object', schema: JSON.stringify(format) };
-      let text = '';
-      for await (const chunk of await eng.chat.completions.create(req)) {
-        const d = chunk.choices[0]?.delta?.content;
-        if (d) { text += d; onChunk?.(text); }
-      }
+      let text = '', first = 0, tokens = 0;
+      const t0 = Date.now();
+      log(`Pregunta enviada a la IA (${messages.length} mensajes)`);
+      // Si en 2 minutos no llega nada, se corta para no quedarse esperando para siempre.
+      let timedOut = false;
+      const watchdog = setTimeout(() => { timedOut = true; eng.interruptGenerate(); }, 120000);
+      try {
+        for await (const chunk of await eng.chat.completions.create(req)) {
+          const d = chunk.choices[0]?.delta?.content;
+          if (d) {
+            if (!first) { first = Date.now() - t0; clearTimeout(watchdog); log(`Primera palabra a los ${(first / 1000).toFixed(1)} s`); }
+            tokens++;
+            text += d; onChunk?.(text);
+          }
+        }
+      } finally { clearTimeout(watchdog); }
+      if (timedOut && !text) throw new Error('La IA tardó demasiado en responder. Prueba un modelo más liviano en Ajustes.');
+      const secs = (Date.now() - t0 - first) / 1000;
+      log(`Respuesta completa: ${tokens} piezas en ${((Date.now() - t0) / 1000).toFixed(1)} s (${secs > 0 ? (tokens / secs).toFixed(1) : '?'} por segundo)`);
       return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
     };
     const p = queue.then(run, run);
@@ -355,7 +392,9 @@ ${mistakes}`;
     rec.continuous = false;
     finalText = '';
     rec.onstart = () => { listening = true; setState('listening'); $('interim').hidden = false; $('interim').textContent = ''; };
+    let silence = 0;
     rec.onresult = e => {
+      clearTimeout(silence);
       let fin = '', interim = '';
       for (let i = 0; i < e.results.length; i++) {
         if (e.results[i].isFinal) fin += e.results[i][0].transcript;
@@ -363,14 +402,19 @@ ${mistakes}`;
       }
       finalText = fin;
       $('interim').textContent = (fin + ' ' + interim).trim();
+      if (fin && !interim) { try { rec.stop(); } catch {} }
+      else silence = setTimeout(() => { try { rec.stop(); } catch {} }, 1800);
     };
     rec.onerror = e => {
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') addError('Permite el micrófono para esta página en Chrome.');
       else if (e.error === 'network') addError('El reconocimiento de voz de Chrome necesita internet. Mientras tanto puedes escribir.');
       else if (e.error !== 'no-speech' && e.error !== 'aborted') addError('Error de micrófono: ' + e.error);
+      log('Micrófono: ' + e.error);
     };
     rec.onend = () => {
+      clearTimeout(silence);
       listening = false;
+      log('Micrófono cerrado: "' + (finalText || $('interim').textContent).trim().slice(0, 60) + '"');
       $('interim').hidden = true;
       const text = (finalText || $('interim').textContent).trim();
       if (state === 'listening') setState('idle');
@@ -383,7 +427,11 @@ ${mistakes}`;
   // ---------- Conversación ----------
   let busy = false;
   async function send(text, { greet = false } = {}) {
-    if (busy) return;
+    if (busy) {
+      log('Mensaje ignorado: la IA sigue ocupada');
+      addError('Mia todavía está pensando la respuesta anterior. Espera un momento.');
+      return;
+    }
     busy = true;
     document.body.dataset.busy = '1';
     setState('thinking');
@@ -438,6 +486,7 @@ ${mistakes}`;
     } catch (e) {
       typing.remove();
       setState('idle');
+      log('Error al responder: ' + e.message);
       addError(e.message);
     } finally {
       busy = false;
@@ -487,6 +536,7 @@ ${mistakes}`;
       return false;
     }
     f16 = adapter.features.has('shader-f16');
+    log(`GPU: ${adapter.info?.vendor || '?'} ${adapter.info?.architecture || ''} · f16=${f16} · ${navigator.userAgent.match(/Chrome\/[\d.]+/)?.[0] || ''}`);
     navigator.storage?.persist?.().catch(() => {}); // que Chrome no borre el modelo descargado
     const cached = await webllm.hasModelInCache(modelId(prefs.model)).catch(() => false);
     line.textContent = cached
@@ -580,6 +630,12 @@ ${mistakes}`;
     e.target.value = '';
   });
 
+  $('copyDiag').addEventListener('click', async () => {
+    const text = diag.join('\n');
+    try { await navigator.clipboard.writeText(text); $('copyDiag').textContent = 'Copiado'; }
+    catch { const r = document.createRange(); r.selectNodeContents($('diagLog')); getSelection().removeAllRanges(); getSelection().addRange(r); }
+  });
+
   $('wipeBtn').addEventListener('click', () => { $('wipeConfirm').hidden = false; });
   $('wipeConfirm').addEventListener('click', () => {
     memory = emptyMemory(); saveMemory();
@@ -611,6 +667,7 @@ ${mistakes}`;
       return;
     }
     $('splash').hidden = true;
+    log('App lista');
     const last = memory.messages[memory.messages.length - 1];
     const stale = !last || Date.now() - new Date(last.at).getTime() > 3 * 3600e3;
     if (stale) send('', { greet: true });
