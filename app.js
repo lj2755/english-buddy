@@ -119,7 +119,9 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
       const onProgress = r => showProgress(r.progress || 0,
         cached ? `Cargando a Mia en la memoria… ${Math.round((r.progress || 0) * 100)}%`
                : `Descargando el modelo (solo la primera vez, usa Wi-Fi)… ${Math.round((r.progress || 0) * 100)}%`);
-      if (!engine) {
+      if (!engine && prefs.noWorker) {
+        engine = await webllm.CreateMLCEngine(id, { initProgressCallback: onProgress });
+      } else if (!engine) {
         engine = await webllm.CreateWebWorkerMLCEngine(
           new Worker(new URL('worker.js', import.meta.url), { type: 'module' }), id, { initProgressCallback: onProgress });
       } else {
@@ -132,35 +134,81 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
       return engine;
     })();
     try { return await loading; }
-    catch (e) { log('Falló la carga del modelo: ' + e.message); throw e; }
+    catch (e) { log('Falló la carga del modelo: ' + errText(e)); throw e; }
     finally { loading = null; }
   }
 
-  function llmChat(messages, { format, onChunk } = {}) {
-    const run = async () => {
-      const eng = await ensureEngine();
-      const req = { messages, stream: true, temperature: 0.5, max_tokens: 600, extra_body: { enable_thinking: false } };
-      if (format) req.response_format = { type: 'json_object', schema: JSON.stringify(format) };
-      let text = '', first = 0, tokens = 0;
-      const t0 = Date.now();
-      log(`Pregunta enviada a la IA (${messages.length} mensajes)`);
-      // Si en 2 minutos no llega nada, se corta para no quedarse esperando para siempre.
-      let timedOut = false;
-      const watchdog = setTimeout(() => { timedOut = true; eng.interruptGenerate(); }, 120000);
-      try {
-        for await (const chunk of await eng.chat.completions.create(req)) {
-          const d = chunk.choices[0]?.delta?.content;
-          if (d) {
-            if (!first) { first = Date.now() - t0; clearTimeout(watchdog); log(`Primera palabra a los ${(first / 1000).toFixed(1)} s`); }
-            tokens++;
-            text += d; onChunk?.(text);
-          }
+  // Describe cualquier error, aunque no traiga mensaje (los del worker a veces llegan vacíos).
+  function errText(e) {
+    if (!e) return 'error desconocido';
+    if (typeof e === 'string') return e;
+    const parts = [e.name, e.message, e.code].filter(Boolean);
+    if (parts.length) return parts.join(': ');
+    try { return JSON.stringify(e) !== '{}' ? JSON.stringify(e) : String(e); } catch { return String(e); }
+  }
+
+  // Una sola generación con la configuración actual.
+  async function generate(messages, { format, onChunk }) {
+    const eng = await ensureEngine();
+    const grammar = format && !prefs.noGrammar;
+    const msgs = messages.map(m => ({ ...m }));
+    if (format && !grammar) msgs[0].content += '\nAnswer ONLY with that JSON object, nothing before or after it.';
+    const req = { messages: msgs, stream: true, temperature: 0.5, max_tokens: 600, extra_body: { enable_thinking: false } };
+    if (grammar) req.response_format = { type: 'json_object', schema: JSON.stringify(format) };
+    let text = '', first = 0, tokens = 0;
+    const t0 = Date.now();
+    log(`Pregunta enviada (${msgs.length} mensajes, ${grammar ? 'con' : 'sin'} formato fijo, f16=${f16}, ${prefs.noWorker ? 'en la página' : 'en worker'})`);
+    // Si en 2 minutos no llega nada, se corta para no quedarse esperando para siempre.
+    let timedOut = false;
+    const watchdog = setTimeout(() => { timedOut = true; eng.interruptGenerate(); }, 120000);
+    try {
+      for await (const chunk of await eng.chat.completions.create(req)) {
+        const d = chunk.choices[0]?.delta?.content;
+        if (d) {
+          if (!first) { first = Date.now() - t0; clearTimeout(watchdog); log(`Primera palabra a los ${(first / 1000).toFixed(1)} s`); }
+          tokens++;
+          text += d; onChunk?.(text);
         }
-      } finally { clearTimeout(watchdog); }
-      if (timedOut && !text) throw new Error('La IA tardó demasiado en responder. Prueba un modelo más liviano en Ajustes.');
-      const secs = (Date.now() - t0 - first) / 1000;
-      log(`Respuesta completa: ${tokens} piezas en ${((Date.now() - t0) / 1000).toFixed(1)} s (${secs > 0 ? (tokens / secs).toFixed(1) : '?'} por segundo)`);
-      return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+      }
+    } finally { clearTimeout(watchdog); }
+    if (timedOut && !text) throw new Error('La IA tardó demasiado en responder. Prueba un modelo más liviano en Ajustes.');
+    const secs = (Date.now() - t0 - first) / 1000;
+    log(`Respuesta completa: ${tokens} piezas en ${((Date.now() - t0) / 1000).toFixed(1)} s (${secs > 0 ? (tokens / secs).toFixed(1) : '?'} por segundo)`);
+    return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+  }
+
+  // Si falla, prueba configuraciones más compatibles y recuerda la que funcionó:
+  // 1) sin formato fijo (la gramática JSON falla en algunas GPU de Android), 2) sin f16.
+  function llmChat(messages, opts = {}) {
+    const run = async () => {
+      for (;;) {
+        try {
+          return await generate(messages, opts);
+        } catch (e) {
+          log('Falló la generación: ' + errText(e) + (e?.stack ? ' | ' + String(e.stack).split('\n')[1]?.trim() : ''));
+          if (/tardó demasiado/.test(e?.message || '')) throw e;
+          loadedId = null; // el motor puede quedar dañado tras un error: se recarga
+          if (opts.format && !prefs.noGrammar) {
+            prefs.noGrammar = true; savePrefs();
+            log('Reintentando sin formato fijo');
+            continue;
+          }
+          if (!prefs.noWorker) {
+            prefs.noWorker = true; savePrefs();
+            log('Reintentando con la IA en la página (sin proceso aparte)');
+            try { await engine?.unload(); } catch {}
+            engine = null;
+            continue;
+          }
+          if (f16 && !prefs.forceF32) {
+            prefs.forceF32 = true; f16 = false; savePrefs();
+            prefs.noGrammar = false; // vuelve a probar el formato con el modelo f32
+            log('Reintentando con el modelo sin f16 (puede descargar el modelo otra vez)');
+            continue;
+          }
+          throw new Error('La IA del celular falló: ' + errText(e));
+        }
+      }
     };
     const p = queue.then(run, run);
     queue = p.catch(() => {});
@@ -210,7 +258,11 @@ ${mistakes}`;
 
   function parseResult(text) {
     let r;
-    try { r = JSON.parse(text); } catch { r = { reply: earlyReply(text) || text, corrections: [], corrected_sentence: '', new_memories: [] }; }
+    try { r = JSON.parse(text); }
+    catch {
+      try { r = JSON.parse(text.match(/\{[\s\S]*\}/)[0]); }
+      catch { r = { reply: earlyReply(text) || text, corrections: [], corrected_sentence: '', new_memories: [] }; }
+    }
     r.corrections = (Array.isArray(r.corrections) ? r.corrections : [])
       .filter(c => c && c.original && c.corrected && c.original.trim().toLowerCase() !== c.corrected.trim().toLowerCase());
     r.new_memories = Array.isArray(r.new_memories) ? r.new_memories : [];
@@ -486,8 +538,8 @@ ${mistakes}`;
     } catch (e) {
       typing.remove();
       setState('idle');
-      log('Error al responder: ' + e.message);
-      addError(e.message);
+      log('Error al responder: ' + errText(e));
+      addError(e?.message || errText(e));
     } finally {
       busy = false;
       delete document.body.dataset.busy;
@@ -535,7 +587,7 @@ ${mistakes}`;
       $('startBtn').disabled = true;
       return false;
     }
-    f16 = adapter.features.has('shader-f16');
+    f16 = adapter.features.has('shader-f16') && !prefs.forceF32;
     log(`GPU: ${adapter.info?.vendor || '?'} ${adapter.info?.architecture || ''} · f16=${f16} · ${navigator.userAgent.match(/Chrome\/[\d.]+/)?.[0] || ''}`);
     navigator.storage?.persist?.().catch(() => {}); // que Chrome no borre el modelo descargado
     const cached = await webllm.hasModelInCache(modelId(prefs.model)).catch(() => false);
