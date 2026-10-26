@@ -4,11 +4,19 @@ Practica inglés conversacional de la vida diaria hablando con **Mia**. Ella te 
 
 **La IA corre dentro de tu celular** con [WebLLM](https://github.com/mlc-ai/web-llm) (WebGPU): no hay servidor, ni cuentas, ni costos por uso. La memoria se guarda en tu teléfono.
 
+## Abrirla
+
+**https://lj2755.github.io/english-buddy/**
+
+Escanea el código con la cámara del celular:
+
+<img src="qr.png" alt="Código QR para abrir English Buddy" width="200">
+
 ## Usarla
 
 1. Abre la página en **Google Chrome** (Android) con Wi-Fi.
 2. Toca **Empezar a hablar**. La primera vez descarga el modelo de IA (1 a 2.5 GB); después abre en segundos y la IA funciona sin conexión.
-3. Menú ⋮ → **Agregar a pantalla principal** para tenerla como app.
+3. Menú ⋮ → **Instalar y agregar acceso directo** → **Instalar** para tenerla como app.
 
 ## Requisitos
 
