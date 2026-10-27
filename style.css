@@ -243,3 +243,13 @@ body[data-busy] .mic, body[data-busy] .send { opacity: .5; }
 .models .in-use { color: var(--good); font-size: 13px; white-space: nowrap; }
 .unclear { font-size: 13px; color: var(--amber); padding-inline: 4px; }
 .source { font-size: 11px; color: var(--muted); padding-inline: 6px; letter-spacing: .03em; }
+.edit-btn { align-self: flex-end; border: 0; background: transparent; color: var(--muted); font-size: 13px; padding: 2px 6px; text-decoration: underline; text-underline-offset: 3px; }
+.edit-btn:hover { color: var(--text); }
+.edit-form { display: flex; gap: 6px; width: 100%; flex-wrap: wrap; justify-content: flex-end; }
+.edit-form input { flex: 1 1 200px; min-width: 0; padding: 10px 14px; border-radius: 14px; border: 1px solid var(--amber); background: var(--panel); color: var(--text); font: inherit; }
+.edit-form .send { padding: 8px 16px; }
+.fixes.pron { border-color: rgba(94,231,255,.35); background: rgba(14,30,40,.94); }
+.fixes.pron .label { color: var(--teal); }
+.fixes.pron .fix { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: center; }
+.fixes.pron .fix .pair, .fixes.pron .fix .why { grid-column: 1; }
+.fixes.pron .fix .say { grid-column: 2; grid-row: 1 / span 2; }

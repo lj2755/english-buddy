@@ -269,10 +269,10 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
       .map(m => `- "${m.original}" -> "${m.corrected}"`).join('\n') || '(none)';
     const lang = prefs.explainLang === 'en' ? 'simple English' : 'Spanish';
     return `You are Mia, the learner's friend. Your name is Mia. Never say you are an AI, a model, Gemma or Qwen.
-The learner is a Spanish speaker who loves chatting with you in English. They enjoy talking with you, partly because you kindly help them when they use a word wrong or say something in a way that sounds odd.
+The learner is a Spanish speaker who loves chatting with you in English, partly because you kindly help when they use a word wrong.
 Scenario: ${SCENARIOS[prefs.scenario] || SCENARIOS.free}
 
-About you: you are warm, curious and positive. You like music, movies, cooking, walking in the park and coffee with friends. You can share a short opinion or a small thing about your day, like a friend does, but keep the focus on the learner.
+About you: warm, curious and positive. You like music, movies, cooking and walks in the park. You may share a short opinion, like a friend, but keep the focus on the learner.
 
 How you talk:
 - Like a good friend: warm, relaxed and kind. Simple everyday English, short sentences (beginner to intermediate level). No emojis.
@@ -280,7 +280,6 @@ How you talk:
 - One or two sentences, then one question about the learner's life, so the conversation keeps going.
 - React to what the learner says with real interest ("Oh, that sounds great!", "Really? Tell me more.").
 - Your friend counts on you to help with English: always check their LAST message carefully and put every real mistake in "corrections". Never let a mistake pass, even when you are just chatting.
-- Spanish speakers often make these mistakes, watch for them: "I have 30 years" (say "I am 30 years old"), "I am agree" ("I agree"), "since five years" ("for five years"), "explain me" ("explain to me"), "people is" ("people are"), "he don't" ("he doesn't"), "make a question" ("ask a question"), "I go yesterday" ("I went yesterday"), "a advice" ("some advice").
 - Talk only about what the learner actually said. Never invent details about the learner or assume things they did not say.
 - Sometimes the learner's message ends with a [Note for Mia ...]. It contains real information from the internet (date, weather, Wikipedia). Use it to answer in simple words. It was not written by the learner: never correct it. If there is no note, do not claim to know today's date, the weather or recent news.
 
@@ -643,7 +642,7 @@ ${mistakes}`;
       $('interim').hidden = true;
       const text = (finalText || $('interim').textContent).trim();
       if (state === 'listening') setState('idle');
-      if (text) send(text);
+      if (text) send(text, { voice: true });
     };
     try { rec.start(); } catch {}
   }
@@ -726,9 +725,99 @@ ${mistakes}`;
     return null;
   }
 
+  // ---------- Editar lo que dijiste ----------
+  // Palabras que cambiaron entre lo que Chrome entendió y lo que querías decir.
+  function pronunciationPairs(heardText, meantText) {
+    const a = heardText.trim().split(/\s+/), b = meantText.trim().split(/\s+/);
+    const k = w => norm(w);
+    const L = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+    for (let i = a.length - 1; i >= 0; i--)
+      for (let j = b.length - 1; j >= 0; j--)
+        L[i][j] = k(a[i]) === k(b[j]) ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+    const pairs = [];
+    let i = 0, j = 0, da = [], db = [];
+    const flush = () => {
+      if (da.length && db.length) pairs.push({ heard: da.join(' '), meant: db.join(' ') });
+      da = []; db = [];
+    };
+    while (i < a.length || j < b.length) {
+      if (i < a.length && j < b.length && k(a[i]) === k(b[j])) { flush(); i++; j++; }
+      else if (j < b.length && (i >= a.length || L[i][j + 1] >= L[i + 1][j])) db.push(b[j++]);
+      else da.push(a[i++]);
+    }
+    flush();
+    return pairs.slice(0, 3);
+  }
+
+  function renderPronunciation(pairs) {
+    const box = el('div', 'fixes pron');
+    box.append(el('div', 'label', 'Pronunciación'));
+    for (const p of pairs) {
+      const f = el('div', 'fix');
+      const pair = el('div', 'pair');
+      pair.append(document.createTextNode('Se entendió '), el('del', '', p.heard), document.createTextNode(' → querías decir '), el('ins', '', p.meant));
+      const btn = el('button', 'say', 'Escuchar');
+      btn.type = 'button';
+      btn.addEventListener('click', () => speak(p.meant, { slow: true }));
+      f.append(pair, el('div', 'why', `Escucha "${p.meant}" y repítelo con calma.`), btn);
+      box.append(f);
+    }
+    return box;
+  }
+
+  function addEditButton(wrap) {
+    chatEl.querySelectorAll('.edit-btn').forEach(b => b.remove()); // solo la última frase se puede editar
+    const btn = el('button', 'edit-btn', '✎ No dije eso');
+    btn.type = 'button';
+    btn.title = 'Corregir lo que Mia entendió';
+    btn.addEventListener('click', () => startEdit(wrap));
+    wrap.querySelector('.bubble').after(btn);
+  }
+
+  function startEdit(wrap) {
+    if (busy || !lastTurn || lastTurn.wrap !== wrap) return;
+    speechSynthesis?.cancel();
+    const form = el('form', 'edit-form');
+    const input = el('input');
+    input.type = 'text'; input.id = 'editInput'; input.value = lastTurn.text; input.autocomplete = 'off';
+    input.setAttribute('aria-label', 'Lo que querías decir');
+    const ok = el('button', 'send', 'Enviar'); ok.type = 'submit';
+    const cancel = el('button', 'say', 'Cancelar'); cancel.type = 'button';
+    form.append(input, ok, cancel);
+    const bubble = wrap.querySelector('.bubble'), btn = wrap.querySelector('.edit-btn');
+    bubble.hidden = true; if (btn) btn.hidden = true;
+    bubble.after(form);
+    input.focus(); input.select();
+    cancel.addEventListener('click', () => { form.remove(); bubble.hidden = false; if (btn) btn.hidden = false; });
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      const meant = input.value.trim();
+      if (!meant || meant === lastTurn.text) { cancel.click(); return; }
+      redoTurn(meant);
+    });
+  }
+
+  // Deshace el último turno (tu frase, la respuesta de Mia y lo que se guardó) y lo repite con la frase corregida.
+  function redoTurn(meant) {
+    const t = lastTurn;
+    lastTurn = null;
+    speechSynthesis?.cancel(); mouth.stop();
+    memory = Object.assign(emptyMemory(), JSON.parse(t.before.memory));
+    saveMemory(); renderMemory();
+    // La conversación de la IA no se recorta (eso la obliga a releer todo, ~40 s):
+    // se le avisa que el micrófono entendió mal y responde a la frase corregida.
+    while (t.wrap.nextSibling) t.wrap.nextSibling.remove();
+    t.wrap.remove();
+    lastMia = [...chatEl.querySelectorAll('.msg.mia .bubble')].pop()?.textContent || '';
+    log(`Frase editada: "${t.text.slice(0, 50)}" → "${meant.slice(0, 50)}"`);
+    timing.lastWord = 0;
+    send(meant, { heard: t.heard, redo: true });
+  }
+
   // ---------- Conversación ----------
   let busy = false;
-  async function send(text, { greet = false } = {}) {
+  let lastTurn = null; // tu último mensaje, para poder editarlo
+  async function send(text, { greet = false, voice = false, heard = null, redo = false } = {}) {
     if (busy) {
       log('Mensaje ignorado: la IA sigue ocupada');
       addError('Mia todavía está pensando la respuesta anterior. Espera un momento.');
@@ -738,6 +827,8 @@ ${mistakes}`;
     document.body.dataset.busy = '1';
     setState('thinking');
     const mine = greet ? null : addMe(text);
+    // Foto del estado antes de este turno: si editas la frase, se vuelve a este punto.
+    const before = greet ? null : { memory: JSON.stringify(memory), sessionLen: chatSession ? chatSession.msgs.length : null };
     const typing = addTyping();
     timing.sent = performance.now();
     if (greet) timing.lastWord = 0;
@@ -760,6 +851,7 @@ ${mistakes}`;
         online = { note: 'You tried to check the internet but it did not work. Say politely that you could not check it right now.', source: null };
       }
       if (online) userMsg.content += `\n\n[Note for Mia, not written by the learner: ${online.note}]`;
+      if (redo) userMsg.content += '\n\n[Note for Mia, not written by the learner: the microphone misheard the previous message. This is what the learner really said. Forget the previous message and reply to this one.]';
     }
     messages.push(userMsg);
 
@@ -798,6 +890,9 @@ ${mistakes}`;
       const unclear = !greet && r.understood === false;
       if (unclear) log('Mia no entendió: "' + text.slice(0, 60) + '"');
       if (mine) mine.append(unclear ? el('div', 'unclear', 'Mia no te entendió bien. Díselo otra vez.') : renderCorrections(r.corrections, r.corrected_sentence, text));
+      // Si editaste una frase dicha por micrófono, lo que cambió son palabras que Chrome entendió mal.
+      const pron = heard ? pronunciationPairs(heard, text) : [];
+      if (mine && pron.length) mine.append(renderPronunciation(pron));
       scrollDown();
 
       const now = new Date().toISOString();
@@ -808,11 +903,17 @@ ${mistakes}`;
           if (!r.corrections.length && !differs(text, r.corrected_sentence)) memory.stats.perfect++;
           recordMistakes(r.corrections);
         }
+        recordMistakes(pron.map(p => ({ original: p.heard, corrected: p.meant, type: 'pronunciation',
+          explanation: `Se entendió "${p.heard}" cuando querías decir "${p.meant}".` })));
       }
       memory.messages.push({ role: 'assistant', text: r.reply, at: now });
       if (!unclear) recordFacts(r.new_memories);
       saveMemory();
       renderMemory();
+      if (mine && before) {
+        lastTurn = { text, wrap: mine, before, heard: heard || (voice ? text : null) };
+        addEditButton(mine);
+      }
       setTimeout(summarizeOld, 4000);
     } catch (e) {
       typing.remove();
