@@ -34,6 +34,7 @@ Escanea el código con la cámara del celular:
 - Correcciones después de cada frase, con explicación en español y la frase correcta para escuchar.
 - Memoria: datos tuyos, errores frecuentes y resúmenes de conversaciones. Copia de seguridad en un archivo.
 - Escenarios: charla libre, cafetería, restaurante, tienda, médico, aeropuerto, direcciones, small talk y entrevista.
+- Información actual: fecha y hora (de tu dispositivo), clima ([Open-Meteo](https://open-meteo.com)) y datos generales ([Wikipedia](https://en.wikipedia.org)). Pregunta, por ejemplo, *"What's the weather in Bogotá?"* o *"Who was Gabriel García Márquez?"*. Debajo de la respuesta aparece la fuente.
 
 ## Archivos
 

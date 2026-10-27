@@ -242,3 +242,4 @@ body[data-busy] .mic, body[data-busy] .send { opacity: .5; }
 .models button.sure { background: var(--fix); color: #2a0d07; }
 .models .in-use { color: var(--good); font-size: 13px; white-space: nowrap; }
 .unclear { font-size: 13px; color: var(--amber); padding-inline: 4px; }
+.source { font-size: 11px; color: var(--muted); padding-inline: 6px; letter-spacing: .03em; }

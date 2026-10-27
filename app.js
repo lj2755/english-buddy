@@ -268,12 +268,13 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
     const mistakes = [...memory.mistakes].sort((a, b) => b.count - a.count).slice(0, 5)
       .map(m => `- "${m.original}" -> "${m.corrected}"`).join('\n') || '(none)';
     const lang = prefs.explainLang === 'en' ? 'simple English' : 'Spanish';
-    return `You are Mia, a polite and patient English teacher. You talk with a Spanish speaker who is practicing simple, everyday spoken English.
+    return `You are Mia, a polite and patient English teacher. Your name is Mia. Never say you are an AI, a model, Gemma or Qwen. You talk with a Spanish speaker who is practicing simple, everyday spoken English.
 Scenario: ${SCENARIOS[prefs.scenario] || SCENARIOS.free}
 
 How you speak:
 - Formal and polite, like a friendly teacher. No slang, no jokes, no emojis.
 - Plain text only: never use asterisks, markdown or any formatting symbols.
+- Sometimes the learner's message ends with a [Note for Mia ...]. It contains real information from the internet (date, weather, Wikipedia). Use it to answer in simple words. It was not written by the learner: never correct it. If there is no note, do not claim to know today's date, the weather or recent news.
 - Simple words and short sentences (beginner to intermediate level).
 - One or two sentences, then one simple question.
 - Talk only about what the learner actually said. Never invent details or assume things they did not say.
@@ -325,6 +326,27 @@ ${mistakes}`;
     try { return JSON.parse('"' + m[1] + '"'); } catch { return null; }
   }
 
+  // El modelo a veces se presenta con su nombre de fábrica: Mia siempre es Mia.
+  const asMia = t => String(t || '').replace(/\b(?:Gemma|Qwen)(?:[\s-]*[\d.]+[a-z]?)*(?:[\s-]*(?:E2B|it))?\b/gi, 'Mia');
+
+  // Parecido entre dos frases según las palabras que comparten (0 a 1).
+  function overlap(a, b) {
+    const A = new Set(norm(a).split(' ').filter(Boolean)), B = new Set(norm(b).split(' ').filter(Boolean));
+    if (!A.size || !B.size) return 0;
+    let same = 0;
+    for (const w of A) if (B.has(w)) same++;
+    return same / Math.max(A.size, B.size);
+  }
+
+  // El modelo pequeño a veces inventa correcciones que no tienen que ver con lo que dijiste.
+  // Solo se aceptan si corrigen palabras que de verdad dijiste y se parecen a tu frase.
+  function sanitizeCorrections(r, learnerText) {
+    const said = norm(learnerText);
+    r.corrections = r.corrections.filter(c => said.includes(norm(c.original)) && overlap(c.original, c.corrected) >= 0.3);
+    if (r.corrected_sentence && overlap(learnerText, r.corrected_sentence) < 0.5) r.corrected_sentence = '';
+    return r;
+  }
+
   function parseResult(text) {
     let r;
     try { r = JSON.parse(text); }
@@ -333,8 +355,9 @@ ${mistakes}`;
       catch { r = { reply: earlyReply(text) || text, corrections: [], corrected_sentence: '', new_memories: [] }; }
     }
     r.corrections = (Array.isArray(r.corrections) ? r.corrections : [])
-      .filter(c => c && c.original && c.corrected && c.original.trim().toLowerCase() !== c.corrected.trim().toLowerCase());
+      .filter(c => c && c.original && c.corrected && norm(c.original) !== norm(c.corrected));
     r.new_memories = Array.isArray(r.new_memories) ? r.new_memories : [];
+    r.reply = asMia(r.reply);
     return r;
   }
 
@@ -414,7 +437,8 @@ ${mistakes}`;
     return wrap;
   }
   // Compara frases sin mayúsculas ni puntuación (el micrófono no las transcribe bien).
-  const norm = t => String(t || '').toLowerCase().replace(/[^a-z0-9' ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const norm = t => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9' ]+/g, ' ').replace(/\s+/g, ' ').trim();
   const differs = (a, b) => b && norm(a) !== norm(b);
 
   function renderCorrections(list, corrected, original) {
@@ -568,6 +592,83 @@ ${mistakes}`;
   }
   function stopListening() { try { rec?.stop(); } catch {} }
 
+  // ---------- Información de internet (fecha y hora, clima, Wikipedia) ----------
+  // La app detecta estas preguntas con reglas simples y le pasa el dato a Mia junto con la frase.
+  // Un modelo pequeño no decide bien cuándo buscar, por eso no se le deja esa decisión.
+  const WEATHER_WORDS = {
+    0: 'clear sky', 1: 'mainly clear', 2: 'partly cloudy', 3: 'cloudy', 45: 'foggy', 48: 'foggy',
+    51: 'light drizzle', 53: 'drizzle', 55: 'heavy drizzle', 61: 'light rain', 63: 'rain', 65: 'heavy rain',
+    66: 'freezing rain', 67: 'freezing rain', 71: 'light snow', 73: 'snow', 75: 'heavy snow', 77: 'snow',
+    80: 'rain showers', 81: 'rain showers', 82: 'heavy rain showers', 85: 'snow showers', 86: 'snow showers',
+    95: 'thunderstorms', 96: 'thunderstorms with hail', 99: 'thunderstorms with hail',
+  };
+
+  async function getJSON(url) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 6000);
+    try {
+      const res = await fetch(url, { signal: ctrl.signal });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return await res.json();
+    } finally { clearTimeout(t); }
+  }
+
+  function dateTimeInfo() {
+    const now = new Date();
+    const date = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const time = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    return { note: `Today is ${date}. The time is ${time}.`, source: 'tu dispositivo' };
+  }
+
+  async function weatherInfo(text) {
+    const m = /\b(?:in|at|for)\s+([a-zà-ÿ][a-zà-ÿ .'-]*?)(?:\s+(?:today|tomorrow|now|right now|this week|please))?\s*[?.!]*$/i.exec(text);
+    const city = m?.[1]?.trim() || prefs.lastCity;
+    if (!city) return { note: 'The learner did not say which city. Ask politely which city they mean.', source: null };
+    const geo = await getJSON(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=en`);
+    const place = geo.results?.[0];
+    if (!place) return { note: `No city called "${city}" was found. Ask the learner to repeat the city name.`, source: null };
+    prefs.lastCity = place.name; savePrefs();
+    const w = await getJSON(`https://api.open-meteo.com/v1/forecast?latitude=${place.latitude}&longitude=${place.longitude}` +
+      '&current=temperature_2m,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto&forecast_days=2');
+    const c = w.current, d = w.daily;
+    return {
+      note: `Weather in ${place.name}, ${place.country}: now ${Math.round(c.temperature_2m)} °C and ${WEATHER_WORDS[c.weather_code] || 'variable'}, wind ${Math.round(c.wind_speed_10m)} km/h. ` +
+        `Today between ${Math.round(d.temperature_2m_min[0])} and ${Math.round(d.temperature_2m_max[0])} °C. ` +
+        `Tomorrow ${WEATHER_WORDS[d.weather_code[1]] || 'variable'}, between ${Math.round(d.temperature_2m_min[1])} and ${Math.round(d.temperature_2m_max[1])} °C.`,
+      source: 'Open-Meteo',
+    };
+  }
+
+  async function wikiInfo(subject) {
+    const q = await getJSON(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(subject)}&srlimit=1&format=json&origin=*`);
+    const title = q.query?.search?.[0]?.title;
+    if (!title) return { note: `Nothing was found about "${subject}". Say politely that you could not find information about it.`, source: null };
+    const sum = await getJSON(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`);
+    const extract = (sum.extract || '').split(/(?<=\.)\s+/).slice(0, 3).join(' ').slice(0, 500);
+    return { note: `From Wikipedia, "${title}": ${extract}`, source: 'Wikipedia' };
+  }
+
+  async function lookupOnline(text) {
+    const t = text.toLowerCase().trim();
+    // El modelo pequeño a veces confunde su nombre con el tuyo: se lo recordamos.
+    if (/\b(what('s| is) your name|who are you|your name)\b/.test(t)) {
+      return { note: 'Your name is Mia. You are an English teacher. Say your name is Mia.', source: null };
+    }
+    if (/\b(what|which)\b.*\b(day|date|time|year|month)\b|\btoday'?s date\b|\bwhat time\b/.test(t) && !/\bweather\b/.test(t)) {
+      return dateTimeInfo();
+    }
+    const asks = /\b(what|what's|how|how's|is it|will it|is going to|tell me|do you know|check)\b/.test(t);
+    if (asks && (/\b(weather|temperature|forecast)\b/.test(t) || /\b(is it|will it|is going to)\b.*\b(rain|raining|sunny|cold|hot|snow|snowing)\b/.test(t))) {
+      return weatherInfo(text);
+    }
+    const m = /^(?:hey mia,?\s*|mia,?\s*)?(?:who (?:is|was|were|are)|what (?:is|was|are|were)(?: an?| the)?|tell me (?:something )?about|do you know (?:who|what)? ?(?:is|was)?)\s+(.+?)[?.!]*$/i.exec(text.trim());
+    const subject = m?.[1]?.trim();
+    if (subject && subject.length > 2 && !/^(you|your|my|me|i|it|this|that|there|here|today|happening|up|wrong|new|going on|the (time|date|day|weather))\b/i.test(subject)) {
+      return wikiInfo(subject);
+    }
+    return null;
+  }
+
   // ---------- Conversación ----------
   let busy = false;
   async function send(text, { greet = false } = {}) {
@@ -590,6 +691,19 @@ ${mistakes}`;
         ? `(The learner just opened the app. Greet them formally in one short sentence${memory.facts.length ? ' that mentions something you remember about them' : ' and ask for their name'}, then start the scenario with one simple question. understood must be true, corrections [] and corrected_sentence "".)`
         : text,
     };
+    // ¿Necesita información de internet? Se agrega como nota, marcada para que no se corrija.
+    let online = null;
+    if (!greet) {
+      try {
+        $('statusText').textContent = 'buscando…';
+        online = await lookupOnline(text);
+        if (online) log(`Información ${online.source ? 'de ' + online.source : ''}: ${online.note.slice(0, 120)}`);
+      } catch (e) {
+        log('No se pudo consultar internet: ' + errText(e));
+        online = { note: 'You tried to check the internet but it did not work. Say politely that you could not check it right now.', source: null };
+      }
+      if (online) userMsg.content += `\n\n[Note for Mia, not written by the learner: ${online.note}]`;
+    }
     messages.push(userMsg);
 
     let spokenEarly = null, miaBubble = null;
@@ -598,7 +712,7 @@ ${mistakes}`;
         format: RESPONSE_SCHEMA,
         onChunk: partial => {
           if (spokenEarly) return;
-          const reply = earlyReply(partial);
+          const reply = asMia(earlyReply(partial));
           if (!reply) return;
           spokenEarly = reply;
           typing.remove();
@@ -607,7 +721,7 @@ ${mistakes}`;
           speak(reply, { after: () => { if (prefs.handsFree && state === 'idle') setTimeout(startListening, 300); } });
         },
       });
-      const r = parseResult(raw);
+      const r = greet ? parseResult(raw) : sanitizeCorrections(parseResult(raw), text);
       if (chatSession) {
         chatSession.msgs.push(userMsg, { role: 'assistant', content: lastRaw });
         if (chatSession.msgs.length > 30) resetSession(); // conversación muy larga: se empieza de nuevo
@@ -619,6 +733,10 @@ ${mistakes}`;
         speak(r.reply, { after: () => { if (prefs.handsFree) setTimeout(startListening, 300); } });
       }
       lastMia = r.reply;
+      if (online?.source) {
+        const lastMiaMsg = [...chatEl.querySelectorAll('.msg.mia')].pop();
+        lastMiaMsg?.append(el('div', 'source', 'Fuente: ' + online.source));
+      }
       // Si Mia no entendió, no corrige ni recuerda nada: solo pide que lo repitas.
       const unclear = !greet && r.understood === false;
       if (unclear) log('Mia no entendió: "' + text.slice(0, 60) + '"');
