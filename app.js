@@ -161,6 +161,8 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
     return typeof reply === 'string' && /[a-z]{2,}.*[a-z]{2,}/i.test(reply) && new Set(reply.toLowerCase()).size > 6;
   }
 
+  let lastRaw = ''; // texto exacto generado en la última respuesta (para reutilizar la conversación)
+
   // Una sola generación con la configuración actual.
   async function generate(messages, { format, onChunk }) {
     const eng = await ensureEngine();
@@ -193,6 +195,7 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
     const secs = (Date.now() - t0 - first) / 1000;
     const gen = usage?.completion_tokens ?? tokens;
     log(`Respuesta completa: ${gen} palabras (${tokens} piezas) en ${((Date.now() - t0) / 1000).toFixed(1)} s · ${secs > 0 ? (gen / secs).toFixed(1) : '?'} por segundo · fin: ${finish || '?'} · entrada: ${usage?.prompt_tokens ?? '?'}`);
+    lastRaw = text;
     const clean = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
     if (!looksValid(clean, format)) {
       log('Respuesta sin sentido. Texto crudo: ' + JSON.stringify(text.slice(0, 160)));
@@ -291,6 +294,16 @@ Previous conversations:
 ${summaries}
 Mistakes they repeat:
 ${mistakes}`;
+  }
+
+  // La IA solo reutiliza lo que ya leyó si cada pregunta repite exactamente la anterior más el
+  // mensaje nuevo. Por eso, durante la sesión, las instrucciones quedan fijas y el historial guarda
+  // el texto completo que generó la IA. Así no tiene que releer todo en cada turno.
+  let chatSession = null;
+  function resetSession() { chatSession = null; }
+  function sessionMessages() {
+    if (!chatSession) chatSession = { system: systemPrompt(), msgs: contextMessages() };
+    return [{ role: 'system', content: chatSession.system }, ...chatSession.msgs];
   }
 
   function contextMessages() {
@@ -544,13 +557,14 @@ ${mistakes}`;
     setState('thinking');
     const mine = greet ? null : addMe(text);
     const typing = addTyping();
-    const messages = [{ role: 'system', content: systemPrompt() }, ...contextMessages()];
-    messages.push({
+    const messages = sessionMessages();
+    const userMsg = {
       role: 'user',
       content: greet
         ? `(The learner just opened the app. Greet them formally in one short sentence${memory.facts.length ? ' that mentions something you remember about them' : ' and ask for their name'}, then start the scenario with one simple question. understood must be true, corrections [] and corrected_sentence "".)`
         : text,
-    });
+    };
+    messages.push(userMsg);
 
     let spokenEarly = null, miaBubble = null;
     try {
@@ -568,6 +582,10 @@ ${mistakes}`;
         },
       });
       const r = parseResult(raw);
+      if (chatSession) {
+        chatSession.msgs.push(userMsg, { role: 'assistant', content: lastRaw });
+        if (chatSession.msgs.length > 30) resetSession(); // conversación muy larga: se empieza de nuevo
+      }
       if (!spokenEarly) {
         typing.remove();
         setState('idle');
@@ -748,7 +766,7 @@ ${mistakes}`;
     $('handsFree').checked = prefs.handsFree;
   }
   $('scenarioSel').addEventListener('change', e => {
-    prefs.scenario = e.target.value; savePrefs(); applyPrefsToUI();
+    prefs.scenario = e.target.value; savePrefs(); applyPrefsToUI(); resetSession();
     dlg.close();
     send('', { greet: true });
   });
@@ -763,7 +781,7 @@ ${mistakes}`;
   $('voiceSel').addEventListener('change', e => { prefs.voice = e.target.value; savePrefs(); speak('Hi! This is my new voice.'); });
   $('rateRange').addEventListener('input', e => { prefs.rate = Number(e.target.value); savePrefs(); applyPrefsToUI(); });
   $('rateRange').addEventListener('change', () => speak('How does this speed sound to you?'));
-  $('explainSel').addEventListener('change', e => { prefs.explainLang = e.target.value; savePrefs(); });
+  $('explainSel').addEventListener('change', e => { prefs.explainLang = e.target.value; savePrefs(); resetSession(); });
   $('listenMode').addEventListener('change', e => { prefs.listenMode = e.target.checked; savePrefs(); });
   $('handsFree').addEventListener('change', e => { prefs.handsFree = e.target.checked; savePrefs(); });
 
@@ -785,6 +803,7 @@ ${mistakes}`;
       const data = JSON.parse(await file.text());
       if (!Array.isArray(data.messages) || !Array.isArray(data.facts)) throw new Error();
       memory = Object.assign(emptyMemory(), data);
+      resetSession();
       saveMemory();
       chatEl.innerHTML = '';
       renderHistory();
@@ -804,7 +823,7 @@ ${mistakes}`;
 
   $('wipeBtn').addEventListener('click', () => { $('wipeConfirm').hidden = false; });
   $('wipeConfirm').addEventListener('click', () => {
-    memory = emptyMemory(); saveMemory();
+    memory = emptyMemory(); saveMemory(); resetSession();
     $('wipeConfirm').hidden = true;
     chatEl.innerHTML = '';
     renderMemory();
