@@ -477,6 +477,7 @@ ${mistakes}`;
   if ('speechSynthesis' in window) { loadVoices(); speechSynthesis.onvoiceschanged = loadVoices; }
 
   let lastMia = '';
+  const timing = { lastWord: 0, micClosed: 0, sent: 0 }; // para medir dónde se va el tiempo
   function speak(text, { slow = false, after } = {}) {
     text = plain(text);
     if (!('speechSynthesis' in window) || !text) { after?.(); return; }
@@ -485,7 +486,16 @@ ${mistakes}`;
     const v = pickVoice();
     if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-US';
     u.rate = slow ? Math.max(0.6, prefs.rate - 0.2) : prefs.rate;
-    u.onstart = () => { setState('speaking'); mouth.start(); };
+    u.onstart = () => {
+      setState('speaking'); mouth.start();
+      if (timing.sent) {
+        const now = performance.now();
+        log(`Mia empezó a hablar: ${((now - timing.sent) / 1000).toFixed(1)} s después de enviar tu frase` +
+          (timing.lastWord ? ` (${((now - timing.lastWord) / 1000).toFixed(1)} s desde tu última palabra)` : '') +
+          ` · voz: ${u.voice?.name || 'automática'}${u.voice && !u.voice.localService ? ' (por internet)' : ''}`);
+        timing.sent = 0;
+      }
+    };
     const done = () => { mouth.stop(); if (state === 'speaking') setState('idle'); after?.(); };
     u.onend = done;
     u.onerror = done;
@@ -534,7 +544,8 @@ ${mistakes}`;
       finalText = fin;
       $('interim').textContent = (fin + ' ' + interim).trim();
       if (fin && !interim) { try { rec.stop(); } catch {} }
-      else silence = setTimeout(() => { try { rec.stop(); } catch {} }, 1800);
+      else silence = setTimeout(() => { try { rec.stop(); } catch {} }, 1200);
+      timing.lastWord = performance.now();
     };
     rec.onerror = e => {
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') addError('Permite el micrófono para esta página en Chrome.');
@@ -545,7 +556,9 @@ ${mistakes}`;
     rec.onend = () => {
       clearTimeout(silence);
       listening = false;
-      log('Micrófono cerrado: "' + (finalText || $('interim').textContent).trim().slice(0, 60) + '"');
+      timing.micClosed = performance.now();
+      log('Micrófono cerrado: "' + (finalText || $('interim').textContent).trim().slice(0, 60) + '"' +
+        (timing.lastWord ? ` (${((timing.micClosed - timing.lastWord) / 1000).toFixed(1)} s después de tu última palabra)` : ''));
       $('interim').hidden = true;
       const text = (finalText || $('interim').textContent).trim();
       if (state === 'listening') setState('idle');
@@ -568,6 +581,8 @@ ${mistakes}`;
     setState('thinking');
     const mine = greet ? null : addMe(text);
     const typing = addTyping();
+    timing.sent = performance.now();
+    if (greet) timing.lastWord = 0;
     const messages = sessionMessages();
     const userMsg = {
       role: 'user',
@@ -716,6 +731,7 @@ ${mistakes}`;
     const v = $('textInput').value.trim();
     if (!v || busy) return;
     $('textInput').value = '';
+    timing.lastWord = 0; // escrito, no hablado
     send(v);
   });
 
