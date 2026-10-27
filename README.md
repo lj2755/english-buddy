@@ -2,7 +2,9 @@
 
 Practica inglés conversacional de la vida diaria hablando con **Mia**. Ella te responde en voz alta y, después de cada frase tuya, te muestra qué decir mejor. Recuerda lo que le cuentas y tus errores más frecuentes.
 
-**La IA corre dentro de tu celular** con [WebLLM](https://github.com/mlc-ai/web-llm) (WebGPU): no hay servidor, ni cuentas, ni costos por uso. La memoria se guarda en tu teléfono.
+**La IA corre dentro de tu celular o tu PC** con [WebLLM](https://github.com/mlc-ai/web-llm) (WebGPU) y el modelo pequeño **Gemma 4 E2B**: no hay servidor, ni cuentas, ni costos por uso. La memoria se guarda en tu dispositivo.
+
+Mia habla de forma formal y sencilla. Si no entiende lo que dices, te pide que lo repitas en vez de adivinar.
 
 ## Abrirla
 
@@ -19,6 +21,8 @@ Escanea el código con la cámara del celular:
 3. Menú ⋮ → **Instalar y agregar acceso directo** → **Instalar** para tenerla como app.
 
 ## Requisitos
+
+- **En la PC (Linux con NVIDIA):** Chrome trae WebGPU apagado. Abre `chrome://flags`, activa **Unsafe WebGPU Support** y **Vulkan**, y toca **Relaunch**.
 
 - Un celular con WebGPU en Chrome (Android 12+ con GPU reciente; probado para Samsung S23 Ultra).
 - Unos 4 GB de RAM libres para el modelo grande. Si el celular se queda corto, elige uno más liviano en **Ajustes → Modelo de IA**.

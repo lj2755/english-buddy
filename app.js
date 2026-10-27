@@ -8,13 +8,14 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   // Modelos que caben en un celular. El sufijo depende de si la GPU soporta números de 16 bits.
   const MODELS = [
-    { base: 'Qwen3-4B', label: 'Qwen3 4B · mejor calidad' },
+    { base: 'gemma-4-E2B-it', label: 'Gemma 4 E2B · recomendado' },
+    { base: 'Qwen3-4B', label: 'Qwen3 4B · más rápido, corrige peor' },
     { base: 'Qwen3.5-4B', label: 'Qwen3.5 4B · más nuevo' },
     { base: 'Qwen3.5-2B', label: 'Qwen3.5 2B · más rápido' },
     { base: 'Qwen3-1.7B', label: 'Qwen3 1.7B · el más liviano' },
-    { base: 'gemma-4-E2B-it', label: 'Gemma 4 E2B · alternativa de Google' },
   ];
-  const DEFAULT_MODEL = 'Qwen3-4B';
+  // Gemma 4 E2B fue el mejor en las pruebas: entiende cuándo pedir que repitas y explica bien en español.
+  const DEFAULT_MODEL = 'gemma-4-E2B-it';
 
   const SCENARIO_NAMES = {
     free: 'Charla libre', coffee: 'Cafetería', restaurant: 'Restaurante', shopping: 'Tienda de ropa',
@@ -78,6 +79,7 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
   const RESPONSE_SCHEMA = {
     type: 'object',
     properties: {
+      understood: { type: 'boolean' },
       reply: { type: 'string' },
       corrections: {
         type: 'array',
@@ -95,7 +97,7 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
       corrected_sentence: { type: 'string' },
       new_memories: { type: 'array', items: { type: 'string' } },
     },
-    required: ['reply', 'corrections', 'corrected_sentence', 'new_memories'],
+    required: ['understood', 'reply', 'corrections', 'corrected_sentence', 'new_memories'],
   };
 
   // ---------- Motor de IA (WebLLM en un Web Worker, para que el video no se trabe) ----------
@@ -263,14 +265,25 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
     const mistakes = [...memory.mistakes].sort((a, b) => b.count - a.count).slice(0, 5)
       .map(m => `- "${m.original}" -> "${m.corrected}"`).join('\n') || '(none)';
     const lang = prefs.explainLang === 'en' ? 'simple English' : 'Spanish';
-    return `You are Mia, a friendly English conversation partner for a Spanish speaker who practices everyday spoken English.
+    return `You are Mia, a polite and patient English teacher. You talk with a Spanish speaker who is practicing simple, everyday spoken English.
 Scenario: ${SCENARIOS[prefs.scenario] || SCENARIOS.free}
 
+How you speak:
+- Formal and polite, like a friendly teacher. No slang, no jokes, no emojis.
+- Simple words and short sentences (beginner to intermediate level).
+- One or two sentences, then one simple question.
+- Talk only about what the learner actually said. Never invent details or assume things they did not say.
+
+The learner's text comes from a microphone, so it may be cut off or wrong.
+If the LAST message is unclear, incomplete, makes no sense, or you are not sure what it means:
+set "understood" to false, politely ask the learner to repeat it (for example: "I'm sorry, I didn't understand. Could you please repeat that?"), and leave corrections and new_memories empty.
+
 Reply with a JSON object:
-- "reply": what you say next, in natural spoken English. 1 or 2 short sentences. End with a question. No emojis, no lists.
-- "corrections": the real mistakes in the learner's LAST message (grammar, wrong word, unnatural phrase). Use an empty list [] if the message is correct. Ignore punctuation and capital letters. Each item: "original" (the wrong words), "corrected", "explanation" (one short sentence written in ${lang}${prefs.explainLang === 'en' ? '' : ' / en español'}), "type" (grammar, vocabulary, naturalness or pronunciation).
-- "corrected_sentence": the learner's whole last message said correctly.
-- "new_memories": facts the learner clearly said about themself in their LAST message, as short sentences like "His name is Luis." or "He works as an engineer." Never guess, never use placeholders. Empty list if none.
+- "understood": true if you clearly understood the learner's LAST message, false otherwise.
+- "reply": what you say next.
+- "corrections": the real mistakes in the learner's LAST message (grammar, wrong word, unnatural phrase). Use [] if it is correct. Ignore punctuation and capital letters. Each item: "original" (the wrong words), "corrected", "explanation" (one short sentence written in ${lang}${prefs.explainLang === 'en' ? '' : ' / en español'}), "type" (grammar, vocabulary, naturalness or pronunciation).
+- "corrected_sentence": the learner's whole last message said correctly ("" if not understood).
+- "new_memories": facts the learner clearly said about themself in their LAST message, as short sentences like "His name is Luis." Never guess. [] if none.
 
 What you remember about the learner:
 ${facts}
@@ -535,7 +548,7 @@ ${mistakes}`;
     messages.push({
       role: 'user',
       content: greet
-        ? `(The learner just opened the app. Greet them in one short sentence${memory.facts.length ? ' that mentions something you remember about them' : ' and ask their name'}, then start the scenario. corrections must be [] and corrected_sentence "".)`
+        ? `(The learner just opened the app. Greet them formally in one short sentence${memory.facts.length ? ' that mentions something you remember about them' : ' and ask for their name'}, then start the scenario with one simple question. understood must be true, corrections [] and corrected_sentence "".)`
         : text,
     });
 
@@ -562,18 +575,23 @@ ${mistakes}`;
         speak(r.reply, { after: () => { if (prefs.handsFree) setTimeout(startListening, 300); } });
       }
       lastMia = r.reply;
-      if (mine) mine.append(renderCorrections(r.corrections, r.corrected_sentence, text));
+      // Si Mia no entendió, no corrige ni recuerda nada: solo pide que lo repitas.
+      const unclear = !greet && r.understood === false;
+      if (unclear) log('Mia no entendió: "' + text.slice(0, 60) + '"');
+      if (mine) mine.append(unclear ? el('div', 'unclear', 'Mia no te entendió. Repítelo, por favor.') : renderCorrections(r.corrections, r.corrected_sentence, text));
       scrollDown();
 
       const now = new Date().toISOString();
       if (!greet) {
-        memory.messages.push({ role: 'user', text, at: now, corrections: r.corrections, corrected: r.corrected_sentence });
-        memory.stats.turns++;
-        if (!r.corrections.length && !differs(text, r.corrected_sentence)) memory.stats.perfect++;
-        recordMistakes(r.corrections);
+        memory.messages.push({ role: 'user', text, at: now, corrections: unclear ? [] : r.corrections, corrected: unclear ? '' : r.corrected_sentence, unclear });
+        if (!unclear) {
+          memory.stats.turns++;
+          if (!r.corrections.length && !differs(text, r.corrected_sentence)) memory.stats.perfect++;
+          recordMistakes(r.corrections);
+        }
       }
       memory.messages.push({ role: 'assistant', text: r.reply, at: now });
-      recordFacts(r.new_memories);
+      if (!unclear) recordFacts(r.new_memories);
       saveMemory();
       renderMemory();
       setTimeout(summarizeOld, 4000);
@@ -625,16 +643,22 @@ ${mistakes}`;
     sel.value = prefs.model;
     const adapter = await navigator.gpu?.requestAdapter().catch(() => null);
     if (!adapter) {
-      line.textContent = 'Este navegador no tiene WebGPU. Usa Google Chrome actualizado en Android.';
+      const desktop = !/Android|iPhone|iPad/i.test(navigator.userAgent);
+      line.textContent = desktop
+        ? 'Chrome no tiene WebGPU activado en esta PC. Abre chrome://flags, activa "Unsafe WebGPU Support" y "Vulkan", y toca "Relaunch".'
+        : 'Este navegador no tiene WebGPU. Usa Google Chrome actualizado en Android.';
+      log('Sin WebGPU: ' + navigator.userAgent);
       $('startBtn').disabled = true;
       return false;
     }
     // En GPU Qualcomm Adreno el modo f16 de WebLLM genera texto sin sentido: se usa f32.
     const adreno = /qualcomm|adreno/i.test(`${adapter.info?.vendor} ${adapter.info?.architecture}`);
-    if (prefs.fixVersion !== 3) {
+    if (prefs.fixVersion !== 4) {
       delete prefs.noGrammar; delete prefs.noWorker; // versiones anteriores los guardaban para siempre
-      if (prefs.fixVersion !== 2) delete prefs.forceF32;
-      prefs.fixVersion = 3; savePrefs();
+      if (!prefs.fixVersion || prefs.fixVersion < 2) delete prefs.forceF32;
+      if (prefs.model === 'Qwen3-4B') prefs.model = DEFAULT_MODEL; // el antiguo modelo por defecto
+      prefs.fixVersion = 4; savePrefs();
+      $('modelSel').value = prefs.model;
     }
     f16 = adapter.features.has('shader-f16') && !prefs.forceF32 && !adreno;
     log(`GPU: ${adapter.info?.vendor || '?'} ${adapter.info?.architecture || ''} · f16=${f16} · ${navigator.userAgent.match(/Chrome\/[\d.]+/)?.[0] || ''}`);
@@ -789,7 +813,8 @@ ${mistakes}`;
   // ---------- Inicio ----------
   function renderHistory() {
     for (const m of memory.messages.slice(-30)) {
-      if (m.role === 'user') addMe(m.text, m.corrections || [], m.corrected);
+      if (m.role === 'user' && m.unclear) { const w = addMe(m.text); w.append(el('div', 'unclear', 'Mia no te entendió. Repítelo, por favor.')); }
+      else if (m.role === 'user') addMe(m.text, m.corrections || [], m.corrected);
       else { addMia(m.text); lastMia = m.text; }
     }
   }

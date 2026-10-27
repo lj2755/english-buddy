@@ -241,3 +241,4 @@ body[data-busy] .mic, body[data-busy] .send { opacity: .5; }
 .models button { border: 1px solid rgba(255,155,134,.4); background: transparent; color: var(--fix); border-radius: 8px; padding: 6px 10px; font-size: 13px; white-space: nowrap; }
 .models button.sure { background: var(--fix); color: #2a0d07; }
 .models .in-use { color: var(--good); font-size: 13px; white-space: nowrap; }
+.unclear { font-size: 13px; color: var(--amber); padding-inline: 4px; }
