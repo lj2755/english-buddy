@@ -102,6 +102,8 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
 
   // ---------- Motor de IA (WebLLM en un Web Worker, para que el video no se trabe) ----------
   let engine = null, loadedId = null, f16 = false, loading = null;
+  // El doble de la memoria de trabajo por defecto (4096): la conversación dura ~35 turnos sin reiniciarse.
+  const CHAT_OPTS = { context_window_size: 8192 };
   // Respaldos de esta sesión (no se guardan: al abrir la app se vuelve a la configuración normal).
   const session = { noGrammar: false, noWorker: false };
   let queue = Promise.resolve(); // el motor atiende una petición a la vez
@@ -125,13 +127,13 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
         cached ? `Cargando a Mia en la memoria… ${Math.round((r.progress || 0) * 100)}%`
                : `Descargando el modelo (solo la primera vez, usa Wi-Fi)… ${Math.round((r.progress || 0) * 100)}%`);
       if (!engine && session.noWorker) {
-        engine = await webllm.CreateMLCEngine(id, { initProgressCallback: onProgress });
+        engine = await webllm.CreateMLCEngine(id, { initProgressCallback: onProgress }, CHAT_OPTS);
       } else if (!engine) {
         engine = await webllm.CreateWebWorkerMLCEngine(
-          new Worker(new URL('worker.js', import.meta.url), { type: 'module' }), id, { initProgressCallback: onProgress });
+          new Worker(new URL('worker.js', import.meta.url), { type: 'module' }), id, { initProgressCallback: onProgress }, CHAT_OPTS);
       } else {
         engine.setInitProgressCallback(onProgress);
-        await engine.reload(id);
+        await engine.reload(id, CHAT_OPTS);
       }
       loadedId = id;
       log(`Modelo listo en ${Math.round((Date.now() - t0) / 1000)} s`);
@@ -270,7 +272,6 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
     const lang = prefs.explainLang === 'en' ? 'simple English' : 'Spanish';
     return `You are Mia, the learner's friend. Your name is Mia. Never say you are an AI, a model, Gemma or Qwen.
 The learner is a Spanish speaker who loves chatting with you in English, partly because you kindly help when they use a word wrong.
-Scenario: ${SCENARIOS[prefs.scenario] || SCENARIOS.free}
 
 About you: warm, curious and positive. You like music, movies, cooking and walks in the park. You may share a short opinion, like a friend, but keep the focus on the learner.
 
@@ -438,20 +439,10 @@ ${mistakes}`;
     if (memory.facts.length > 60) memory.facts = memory.facts.slice(-60);
   }
 
-  let summarizing = false;
-  async function summarizeOld() {
-    if (summarizing || memory.messages.length <= 30) return;
-    summarizing = true;
-    const old = memory.messages.slice(0, 16);
-    const transcript = old.map(m => `${m.role === 'user' ? 'Learner' : 'Mia'}: ${m.text}`).join('\n');
-    try {
-      const text = await llmChat([{ role: 'user', content: `Summarize this conversation in 2 sentences: the topics and anything personal the learner shared.\n\n${transcript}` }]);
-      memory.summaries.push({ date: (old[0].at || new Date().toISOString()).slice(0, 10), text: text.trim() });
-      if (memory.summaries.length > 40) memory.summaries = memory.summaries.slice(-40);
-      memory.messages = memory.messages.slice(16);
-      saveMemory();
-    } catch { /* se intenta otra vez más tarde */ }
-    summarizing = false;
+  // Los mensajes viejos se recortan sin pedirle un resumen a la IA: ese resumen borraba lo que la
+  // IA ya había leído y el turno siguiente tardaba ~25 s. Tus datos y errores frecuentes se conservan.
+  function summarizeOld() {
+    if (memory.messages.length > 60) { memory.messages = memory.messages.slice(-40); saveMemory(); }
   }
 
   // ---------- Render ----------
@@ -817,7 +808,7 @@ ${mistakes}`;
   // ---------- Conversación ----------
   let busy = false;
   let lastTurn = null; // tu último mensaje, para poder editarlo
-  async function send(text, { greet = false, voice = false, heard = null, redo = false } = {}) {
+  async function send(text, { greet = false, voice = false, heard = null, redo = false, topic = false } = {}) {
     if (busy) {
       log('Mensaje ignorado: la IA sigue ocupada');
       addError('Mia todavía está pensando la respuesta anterior. Espera un momento.');
@@ -836,7 +827,9 @@ ${mistakes}`;
     const userMsg = {
       role: 'user',
       content: greet
-        ? `(The learner just opened the app. Greet them like a friend who is happy to see them, in one short sentence${memory.facts.length ? ' that mentions something you remember about them' : ' and ask for their name'}, then ask one simple question to start chatting. understood must be true, corrections [] and corrected_sentence "".)`
+        ? topic
+          ? `(The learner chose a new topic: ${SCENARIOS[prefs.scenario] || SCENARIOS.free} From now on, chat about this. Say one short friendly sentence about the change and ask one simple question to start. understood must be true, corrections [] and corrected_sentence "".)`
+          : `(The learner just opened the app. Topic: ${SCENARIOS[prefs.scenario] || SCENARIOS.free} Greet them like a friend who is happy to see them, in one short sentence${memory.facts.length ? ' that mentions something you remember about them' : ' and ask for their name'}, then ask one simple question to start chatting. understood must be true, corrections [] and corrected_sentence "".)`
         : text,
     };
     // ¿Necesita información de internet? Se agrega como nota, marcada para que no se corrija.
@@ -873,7 +866,7 @@ ${mistakes}`;
       const r = greet ? parseResult(raw) : sanitizeCorrections(parseResult(raw), text);
       if (chatSession) {
         chatSession.msgs.push(userMsg, { role: 'assistant', content: lastRaw });
-        if (chatSession.msgs.length > 30) resetSession(); // conversación muy larga: se empieza de nuevo
+        if (chatSession.msgs.length > 70) resetSession(); // conversación muy larga: se empieza de nuevo
       }
       if (!spokenEarly) {
         typing.remove();
@@ -1069,9 +1062,9 @@ ${mistakes}`;
     $('handsFree').checked = prefs.handsFree;
   }
   $('scenarioSel').addEventListener('change', e => {
-    prefs.scenario = e.target.value; savePrefs(); applyPrefsToUI(); resetSession();
+    prefs.scenario = e.target.value; savePrefs(); applyPrefsToUI();
     dlg.close();
-    send('', { greet: true });
+    send('', { greet: true, topic: true }); // sin reiniciar a la IA: se le avisa del nuevo tema
   });
   $('modelSel').addEventListener('change', async e => {
     prefs.model = e.target.value; savePrefs();
