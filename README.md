@@ -22,7 +22,7 @@ Escanea el código con la cámara del celular:
 
 ## Requisitos
 
-- **En la PC (Linux con NVIDIA):** Chrome trae WebGPU apagado. Abre `chrome://flags`, activa **Unsafe WebGPU Support** y **Vulkan**, y toca **Relaunch**.
+- **En la PC (Linux con NVIDIA):** Chrome trae WebGPU apagado. Abre `chrome://flags`, activa **Unsafe WebGPU Support** y **Override software rendering list**, y toca **Relaunch**. No actives **Vulkan**: en Wayland deja la ventana de Chrome negra. También puedes usar `./abrir-en-pc.sh`, que abre la app en un Chrome aparte con esas opciones.
 
 - Un celular con WebGPU en Chrome (Android 12+ con GPU reciente; probado para Samsung S23 Ultra).
 - Unos 4 GB de RAM libres para el modelo grande. Si el celular se queda corto, elige uno más liviano en **Ajustes → Modelo de IA**.

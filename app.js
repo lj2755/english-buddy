@@ -645,7 +645,7 @@ ${mistakes}`;
     if (!adapter) {
       const desktop = !/Android|iPhone|iPad/i.test(navigator.userAgent);
       line.textContent = desktop
-        ? 'Chrome no tiene WebGPU activado en esta PC. Abre chrome://flags, activa "Unsafe WebGPU Support" y "Vulkan", y toca "Relaunch".'
+        ? 'Chrome no tiene WebGPU activado en esta PC. Abre chrome://flags, activa "Unsafe WebGPU Support" y "Override software rendering list" (no actives Vulkan), y toca "Relaunch".'
         : 'Este navegador no tiene WebGPU. Usa Google Chrome actualizado en Android.';
       log('Sin WebGPU: ' + navigator.userAgent);
       $('startBtn').disabled = true;
