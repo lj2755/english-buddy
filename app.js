@@ -273,6 +273,7 @@ Scenario: ${SCENARIOS[prefs.scenario] || SCENARIOS.free}
 
 How you speak:
 - Formal and polite, like a friendly teacher. No slang, no jokes, no emojis.
+- Plain text only: never use asterisks, markdown or any formatting symbols.
 - Simple words and short sentences (beginner to intermediate level).
 - One or two sentences, then one simple question.
 - Talk only about what the learner actually said. Never invent details or assume things they did not say.
@@ -383,7 +384,16 @@ ${mistakes}`;
   }
   const scrollDown = () => requestAnimationFrame(() => { chatEl.scrollTop = chatEl.scrollHeight; });
 
+  // Quita las marcas de formato (*palabra*, **palabra**, _palabra_, `palabra`, # títulos)
+  // para que no se muestren ni se lean en voz alta.
+  const plain = t => String(t || '')
+    .replace(/[*_`~]+/g, '')
+    .replace(/^\s*#+\s*/gm, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
   function addMia(text) {
+    text = plain(text);
     const wrap = el('div', 'msg mia');
     const b = el('div', 'bubble', text);
     if (prefs.listenMode) {
@@ -414,16 +424,16 @@ ${mistakes}`;
     for (const c of list) {
       const f = el('div', 'fix');
       const pair = el('div', 'pair');
-      pair.append(el('del', '', c.original), document.createTextNode(' → '), el('ins', '', c.corrected));
+      pair.append(el('del', '', plain(c.original)), document.createTextNode(' → '), el('ins', '', plain(c.corrected)));
       if (KIND_NAMES[c.type]) pair.append(el('span', 'kind', KIND_NAMES[c.type]));
       f.append(pair);
-      if (c.explanation) f.append(el('div', 'why', c.explanation));
+      if (c.explanation) f.append(el('div', 'why', plain(c.explanation)));
       box.append(f);
     }
     if (differs(original, corrected)) {
       const better = el('div', 'better');
       const p = el('p');
-      p.append(el('small', '', 'Mejor dicho'), document.createTextNode(corrected));
+      p.append(el('small', '', 'Mejor dicho'), document.createTextNode(plain(corrected)));
       const btn = el('button', 'say', 'Escuchar');
       btn.type = 'button';
       btn.addEventListener('click', () => speak(corrected, { slow: true }));
@@ -468,6 +478,7 @@ ${mistakes}`;
 
   let lastMia = '';
   function speak(text, { slow = false, after } = {}) {
+    text = plain(text);
     if (!('speechSynthesis' in window) || !text) { after?.(); return; }
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
