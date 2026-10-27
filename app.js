@@ -99,6 +99,8 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
 
   // ---------- Motor de IA (WebLLM en un Web Worker, para que el video no se trabe) ----------
   let engine = null, loadedId = null, f16 = false, loading = null;
+  // Respaldos de esta sesión (no se guardan: al abrir la app se vuelve a la configuración normal).
+  const session = { noGrammar: false, noWorker: false };
   let queue = Promise.resolve(); // el motor atiende una petición a la vez
   const modelId = base => `${base}-${f16 ? 'q4f16_1' : 'q4f32_1'}-MLC`;
 
@@ -119,7 +121,7 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
       const onProgress = r => showProgress(r.progress || 0,
         cached ? `Cargando a Mia en la memoria… ${Math.round((r.progress || 0) * 100)}%`
                : `Descargando el modelo (solo la primera vez, usa Wi-Fi)… ${Math.round((r.progress || 0) * 100)}%`);
-      if (!engine && prefs.noWorker) {
+      if (!engine && session.noWorker) {
         engine = await webllm.CreateMLCEngine(id, { initProgressCallback: onProgress });
       } else if (!engine) {
         engine = await webllm.CreateWebWorkerMLCEngine(
@@ -159,19 +161,21 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
   // Una sola generación con la configuración actual.
   async function generate(messages, { format, onChunk }) {
     const eng = await ensureEngine();
-    const grammar = format && !prefs.noGrammar;
+    const grammar = format && !session.noGrammar;
     const msgs = messages.map(m => ({ ...m }));
     if (format && !grammar) msgs[0].content += '\nAnswer ONLY with that JSON object, nothing before or after it.';
-    const req = { messages: msgs, stream: true, temperature: 0.5, max_tokens: 400, extra_body: { enable_thinking: false } };
+    const req = { messages: msgs, stream: true, stream_options: { include_usage: true }, temperature: 0.5, max_tokens: 400, extra_body: { enable_thinking: false } };
     if (grammar) req.response_format = { type: 'json_object', schema: JSON.stringify(format) };
-    let text = '', first = 0, tokens = 0;
+    let text = '', first = 0, tokens = 0, finish = '', usage = null;
     const t0 = Date.now();
-    log(`Pregunta enviada (${msgs.length} mensajes, ${grammar ? 'con' : 'sin'} formato fijo, f16=${f16}, ${prefs.noWorker ? 'en la página' : 'en worker'})`);
+    log(`Pregunta enviada (${msgs.length} mensajes, ${grammar ? 'con' : 'sin'} formato fijo, f16=${f16}, ${session.noWorker ? 'en la página' : 'en worker'})`);
     // Si en 2 minutos no llega nada, se corta para no quedarse esperando para siempre.
     let timedOut = false;
     const watchdog = setTimeout(() => { timedOut = true; eng.interruptGenerate(); }, 120000);
     try {
       for await (const chunk of await eng.chat.completions.create(req)) {
+        if (chunk.usage) usage = chunk.usage;
+        if (chunk.choices[0]?.finish_reason) finish = chunk.choices[0].finish_reason;
         const d = chunk.choices[0]?.delta?.content;
         if (d) {
           if (!first) { first = Date.now() - t0; clearTimeout(watchdog); log(`Primera palabra a los ${(first / 1000).toFixed(1)} s`); }
@@ -182,10 +186,11 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
     } finally { clearTimeout(watchdog); }
     if (timedOut && !text) throw new Error('La IA tardó demasiado en responder. Prueba un modelo más liviano en Ajustes.');
     const secs = (Date.now() - t0 - first) / 1000;
-    log(`Respuesta completa: ${tokens} piezas en ${((Date.now() - t0) / 1000).toFixed(1)} s (${secs > 0 ? (tokens / secs).toFixed(1) : '?'} por segundo)`);
+    const gen = usage?.completion_tokens ?? tokens;
+    log(`Respuesta completa: ${gen} palabras (${tokens} piezas) en ${((Date.now() - t0) / 1000).toFixed(1)} s · ${secs > 0 ? (gen / secs).toFixed(1) : '?'} por segundo · fin: ${finish || '?'} · entrada: ${usage?.prompt_tokens ?? '?'}`);
     const clean = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
     if (!looksValid(clean, format)) {
-      log('Respuesta sin sentido: ' + JSON.stringify(clean.slice(0, 80)));
+      log('Respuesta sin sentido. Texto crudo: ' + JSON.stringify(text.slice(0, 160)));
       throw new Error('respuesta sin sentido');
     }
     return clean;
@@ -195,14 +200,22 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
   // 1) sin formato fijo (la gramática JSON falla en algunas GPU de Android), 2) sin f16.
   function llmChat(messages, opts = {}) {
     const run = async () => {
-      for (;;) {
+      for (let attempt = 0; ; attempt++) {
         try {
           return await generate(messages, opts);
         } catch (e) {
+          if (attempt >= 4) throw new Error('La IA del celular no logró responder. Prueba otro modelo en Ajustes → Modelo de IA (por ejemplo Qwen3.5 2B).');
           log('Falló la generación: ' + errText(e) + (e?.stack ? ' | ' + String(e.stack).split('\n')[1]?.trim() : ''));
           if (/tardó demasiado/.test(e?.message || '')) throw e;
-          loadedId = null; // el motor puede quedar dañado tras un error: se recarga
           const msg = errText(e);
+          // Conversación demasiado larga para el modelo: se recortan los mensajes viejos.
+          if (/context window|prompt tokens/i.test(msg) && messages.length > 3) {
+            messages = [messages[0], ...messages.slice(-3)];
+            if (messages[1].role !== 'user') messages.splice(1, 1);
+            log('Conversación muy larga: uso solo los últimos mensajes');
+            continue;
+          }
+          loadedId = null; // el motor puede quedar dañado tras un error: se recarga
           if (f16 && /sin sentido|Grammar matcher|NaN/i.test(msg)) {
             prefs.forceF32 = true; f16 = false; savePrefs();
             log('Los números f16 de esta GPU fallan: cambio al modelo sin f16');
@@ -214,13 +227,13 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
             log('Falta memoria: cambio a Qwen3.5 2B');
             continue;
           }
-          if (opts.format && !prefs.noGrammar) {
-            prefs.noGrammar = true; savePrefs();
+          if (opts.format && !session.noGrammar) {
+            session.noGrammar = true;
             log('Reintentando sin formato fijo');
             continue;
           }
-          if (!prefs.noWorker) {
-            prefs.noWorker = true; savePrefs();
+          if (!session.noWorker) {
+            session.noWorker = true;
             log('Reintentando con la IA en la página (sin proceso aparte)');
             try { await engine?.unload(); } catch {}
             engine = null;
@@ -228,11 +241,11 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
           }
           if (f16 && !prefs.forceF32) {
             prefs.forceF32 = true; f16 = false; savePrefs();
-            prefs.noGrammar = false; // vuelve a probar el formato con el modelo f32
+            session.noGrammar = false; // vuelve a probar el formato con el modelo f32
             log('Reintentando con el modelo sin f16 (puede descargar el modelo otra vez)');
             continue;
           }
-          throw new Error('La IA del celular falló: ' + errText(e));
+          throw new Error('La IA del celular no logró responder (' + msg + '). Prueba otro modelo en Ajustes → Modelo de IA.');
         }
       }
     };
@@ -242,8 +255,8 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
   }
 
   function systemPrompt() {
-    const facts = memory.facts.length ? memory.facts.map(f => `- ${f}`).join('\n') : '(nothing yet)';
-    const summaries = memory.summaries.slice(-5).map(s => `- ${s.text}`).join('\n') || '(none)';
+    const facts = memory.facts.length ? memory.facts.slice(-25).map(f => `- ${f}`).join('\n') : '(nothing yet)';
+    const summaries = memory.summaries.slice(-3).map(s => `- ${s.text}`).join('\n') || '(none)';
     const mistakes = [...memory.mistakes].sort((a, b) => b.count - a.count).slice(0, 5)
       .map(m => `- "${m.original}" -> "${m.corrected}"`).join('\n') || '(none)';
     const lang = prefs.explainLang === 'en' ? 'simple English' : 'Spanish';
@@ -615,9 +628,10 @@ ${mistakes}`;
     }
     // En GPU Qualcomm Adreno el modo f16 de WebLLM genera texto sin sentido: se usa f32.
     const adreno = /qualcomm|adreno/i.test(`${adapter.info?.vendor} ${adapter.info?.architecture}`);
-    if (prefs.fixVersion !== 2) {
-      delete prefs.noGrammar; delete prefs.noWorker; delete prefs.forceF32;
-      prefs.fixVersion = 2; savePrefs();
+    if (prefs.fixVersion !== 3) {
+      delete prefs.noGrammar; delete prefs.noWorker; // versiones anteriores los guardaban para siempre
+      if (prefs.fixVersion !== 2) delete prefs.forceF32;
+      prefs.fixVersion = 3; savePrefs();
     }
     f16 = adapter.features.has('shader-f16') && !prefs.forceF32 && !adreno;
     log(`GPU: ${adapter.info?.vendor || '?'} ${adapter.info?.architecture || ''} · f16=${f16} · ${navigator.userAgent.match(/Chrome\/[\d.]+/)?.[0] || ''}`);
