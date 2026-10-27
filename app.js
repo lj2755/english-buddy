@@ -1,6 +1,6 @@
 // English Buddy — todo corre en el celular: la IA en la GPU con WebLLM (WebGPU),
 // la voz en Chrome y la memoria en el almacenamiento del navegador.
-import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+esm';
+import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+esm';
 
 (() => {
   const $ = id => document.getElementById(id);
@@ -12,6 +12,7 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
     { base: 'Qwen3.5-4B', label: 'Qwen3.5 4B · más nuevo' },
     { base: 'Qwen3.5-2B', label: 'Qwen3.5 2B · más rápido' },
     { base: 'Qwen3-1.7B', label: 'Qwen3 1.7B · el más liviano' },
+    { base: 'gemma-4-E2B-it', label: 'Gemma 4 E2B · alternativa de Google' },
   ];
   const DEFAULT_MODEL = 'Qwen3-4B';
 
@@ -164,7 +165,9 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+es
     const grammar = format && !session.noGrammar;
     const msgs = messages.map(m => ({ ...m }));
     if (format && !grammar) msgs[0].content += '\nAnswer ONLY with that JSON object, nothing before or after it.';
-    const req = { messages: msgs, stream: true, stream_options: { include_usage: true }, temperature: 0.5, max_tokens: 400, extra_body: { enable_thinking: false } };
+    const req = { messages: msgs, stream: true, stream_options: { include_usage: true }, temperature: 0.5, max_tokens: 400 };
+    // Solo los modelos Qwen tienen "modo pensar"; apagarlo los hace responder mucho más rápido.
+    if (/^Qwen/i.test(prefs.model)) req.extra_body = { enable_thinking: false };
     if (grammar) req.response_format = { type: 'json_object', schema: JSON.stringify(format) };
     let text = '', first = 0, tokens = 0, finish = '', usage = null;
     const t0 = Date.now();
