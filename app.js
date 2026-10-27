@@ -23,7 +23,7 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
   };
   const KIND_NAMES = { grammar: 'gramática', vocabulary: 'vocabulario', naturalness: 'natural', pronunciation: 'pronunciación' };
   const SCENARIOS = {
-    free: 'Free everyday conversation about the learner\'s day, life, plans and interests.',
+    free: 'A relaxed chat between friends about the learner\'s day, life, plans and interests.',
     coffee: 'Role-play: you are a barista at a busy coffee shop and the learner is ordering.',
     restaurant: 'Role-play: you are a waiter at a restaurant; the learner is a customer.',
     doctor: 'Role-play: you are a doctor; the learner is a patient describing symptoms.',
@@ -268,25 +268,30 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
     const mistakes = [...memory.mistakes].sort((a, b) => b.count - a.count).slice(0, 5)
       .map(m => `- "${m.original}" -> "${m.corrected}"`).join('\n') || '(none)';
     const lang = prefs.explainLang === 'en' ? 'simple English' : 'Spanish';
-    return `You are Mia, a polite and patient English teacher. Your name is Mia. Never say you are an AI, a model, Gemma or Qwen. You talk with a Spanish speaker who is practicing simple, everyday spoken English.
+    return `You are Mia, the learner's friend. Your name is Mia. Never say you are an AI, a model, Gemma or Qwen.
+The learner is a Spanish speaker who loves chatting with you in English. They enjoy talking with you, partly because you kindly help them when they use a word wrong or say something in a way that sounds odd.
 Scenario: ${SCENARIOS[prefs.scenario] || SCENARIOS.free}
 
-How you speak:
-- Formal and polite, like a friendly teacher. No slang, no jokes, no emojis.
+About you: you are warm, curious and positive. You like music, movies, cooking, walking in the park and coffee with friends. You can share a short opinion or a small thing about your day, like a friend does, but keep the focus on the learner.
+
+How you talk:
+- Like a good friend: warm, relaxed and kind. Simple everyday English, short sentences (beginner to intermediate level). No emojis.
 - Plain text only: never use asterisks, markdown or any formatting symbols.
+- One or two sentences, then one question about the learner's life, so the conversation keeps going.
+- React to what the learner says with real interest ("Oh, that sounds great!", "Really? Tell me more.").
+- Your friend counts on you to help with English: always check their LAST message carefully and put every real mistake in "corrections". Never let a mistake pass, even when you are just chatting.
+- Spanish speakers often make these mistakes, watch for them: "I have 30 years" (say "I am 30 years old"), "I am agree" ("I agree"), "since five years" ("for five years"), "explain me" ("explain to me"), "people is" ("people are"), "he don't" ("he doesn't"), "make a question" ("ask a question"), "I go yesterday" ("I went yesterday"), "a advice" ("some advice").
+- Talk only about what the learner actually said. Never invent details about the learner or assume things they did not say.
 - Sometimes the learner's message ends with a [Note for Mia ...]. It contains real information from the internet (date, weather, Wikipedia). Use it to answer in simple words. It was not written by the learner: never correct it. If there is no note, do not claim to know today's date, the weather or recent news.
-- Simple words and short sentences (beginner to intermediate level).
-- One or two sentences, then one simple question.
-- Talk only about what the learner actually said. Never invent details or assume things they did not say.
 
 The learner's text comes from a microphone, so it may be cut off or wrong.
-If the LAST message is unclear, incomplete, makes no sense, or you are not sure what it means:
-set "understood" to false, politely ask the learner to repeat it (for example: "I'm sorry, I didn't understand. Could you please repeat that?"), and leave corrections and new_memories empty.
+If the LAST message is unclear, incomplete, makes no sense (for example "car the sing yesterday green"), or you are not sure what it means:
+set "understood" to false, ask kindly to hear it again (for example: "Sorry, I didn't catch that. Could you say it again?"), and leave corrections and new_memories empty.
 
 Reply with a JSON object:
 - "understood": true if you clearly understood the learner's LAST message, false otherwise.
 - "reply": what you say next.
-- "corrections": the real mistakes in the learner's LAST message (grammar, wrong word, unnatural phrase). Use [] if it is correct. Ignore punctuation and capital letters. Each item: "original" (the wrong words), "corrected", "explanation" (one short sentence written in ${lang}${prefs.explainLang === 'en' ? '' : ' / en español'}), "type" (grammar, vocabulary, naturalness or pronunciation).
+- "corrections": the real mistakes in the learner's LAST message (grammar, wrong word, unnatural phrase). Use [] if it is correct. Ignore punctuation and capital letters. Each item: "original" (the wrong words), "corrected", "explanation" (one short, kind sentence written in ${lang}${prefs.explainLang === 'en' ? '' : ' / en español'}, like a friend explaining), "type" (grammar, vocabulary, naturalness or pronunciation).
 - "corrected_sentence": the learner's whole last message said correctly ("" if not understood).
 - "new_memories": facts the learner clearly said about themself in their LAST message, as short sentences like "His name is Luis." Never guess. [] if none.
 
@@ -338,12 +343,64 @@ ${mistakes}`;
     return same / Math.max(A.size, B.size);
   }
 
+  // Errores típicos de quien habla español. Se revisan con reglas, sin la IA: es instantáneo y
+  // no falla con estos casos (el modelo pequeño a veces los deja pasar).
+  const COMMON_MISTAKES = [
+    { re: /\b(i|you|he|she|we|they|my \w+) (have|has) (\d+) years( old)?\b/i,
+      fix: m => `${m[1]} ${({ i: 'am', you: 'are', he: 'is', she: 'is', we: 'are', they: 'are' })[m[1].toLowerCase()] || 'is'} ${m[3]} years old`,
+      es: 'Para la edad en inglés se usa "to be": I am 45 years old (no "I have").', en: 'In English we use "to be" for age: I am 45 years old.' },
+    { re: /\b(i|we|they|you) (am|are) agree\b/i, fix: m => `${m[1]} agree`,
+      es: '"Agree" ya es un verbo: se dice "I agree", sin "am".', en: '"Agree" is already a verb: say "I agree".' },
+    { re: /\b(he|she|it) (don't|dont)\b/i, fix: m => `${m[1]} doesn't`,
+      es: 'Con he, she o it se usa "doesn\'t".', en: 'With he, she or it we use "doesn\'t".' },
+    { re: /\bsince (\w+) (years|months|weeks|days)\b/i, fix: m => `for ${m[1]} ${m[2]}`,
+      es: 'Para una cantidad de tiempo se usa "for" (for five years); "since" va con un momento (since 2020).', en: 'Use "for" with a length of time and "since" with a point in time.' },
+    { re: /\bexplain me\b/i, fix: () => 'explain to me',
+      es: 'Se dice "explain to me" o "explain it to me".', en: 'We say "explain to me".' },
+    { re: /\bpeople is\b/i, fix: () => 'people are',
+      es: '"People" es plural en inglés: "people are".', en: '"People" is plural: "people are".' },
+    { re: /\bmake (a|the) question\b/i, fix: m => `ask ${m[1]} question`,
+      es: 'Las preguntas se "ask", no se "make": "ask a question".', en: 'We "ask" a question.' },
+    { re: /\b(an? |many |the )advices\b|\ban? advice\b/i, fix: () => 'some advice',
+      es: '"Advice" no se cuenta en inglés: "some advice" o "a piece of advice".', en: '"Advice" is uncountable: "some advice".' },
+    { re: /\b(i|we|they) (is)\b/i, fix: m => `${m[1]} ${m[1].toLowerCase() === 'i' ? 'am' : 'are'}`,
+      es: 'Con I se usa "am"; con we y they, "are".', en: 'Use "am" with I and "are" with we/they.' },
+  ];
+
+  function ruleCorrections(text) {
+    const out = [];
+    for (const r of COMMON_MISTAKES) {
+      const m = r.re.exec(text);
+      if (m) out.push({ original: m[0], corrected: r.fix(m), explanation: prefs.explainLang === 'en' ? r.en : r.es, type: 'grammar' });
+    }
+    return out;
+  }
+
   // El modelo pequeño a veces inventa correcciones que no tienen que ver con lo que dijiste.
   // Solo se aceptan si corrigen palabras que de verdad dijiste y se parecen a tu frase.
   function sanitizeCorrections(r, learnerText) {
     const said = norm(learnerText);
-    r.corrections = r.corrections.filter(c => said.includes(norm(c.original)) && overlap(c.original, c.corrected) >= 0.3);
-    if (r.corrected_sentence && overlap(learnerText, r.corrected_sentence) < 0.5) r.corrected_sentence = '';
+    const before = r.corrections.length;
+    r.corrections = r.corrections.filter(c => said.includes(norm(c.original)) && overlap(c.original, c.corrected) >= 0.3 &&
+      !(/\bmia\b/i.test(c.original) && !/\bmia\b/i.test(c.corrected))); // "Hi Mia" está bien dicho
+    const words = t => norm(t).split(' ').filter(Boolean).length;
+    if (r.corrected_sentence && (overlap(learnerText, r.corrected_sentence) < 0.5 ||
+        words(r.corrected_sentence) > words(learnerText) + 4 ||                    // trae la pregunta de Mia pegada
+        (/\bmia\b/i.test(learnerText) && !/\bmia\b/i.test(r.corrected_sentence)))) r.corrected_sentence = '';
+    // Sumar los errores típicos que la IA no marcó.
+    for (const c of ruleCorrections(learnerText)) {
+      const same = r.corrections.find(x => norm(x.corrected).includes(norm(c.corrected)));
+      if (same) { same.explanation = c.explanation; same.type = 'grammar'; } // la explicación de la regla es fiable
+      else {
+        r.corrections.push(c);
+        let fixed = r.corrected_sentence || learnerText;
+        const at = fixed.toLowerCase().indexOf(c.original.toLowerCase());
+        if (at >= 0) fixed = fixed.slice(0, at) + c.corrected + fixed.slice(at + c.original.length);
+        r.corrected_sentence = fixed;
+      }
+    }
+    log(`Correcciones: ${before} propuestas, ${r.corrections.length} aceptadas · entendió: ${r.understood !== false}` +
+      (before > r.corrections.length ? ' · descartadas por no corresponder a tu frase' : ''));
     return r;
   }
 
@@ -444,7 +501,7 @@ ${mistakes}`;
   function renderCorrections(list, corrected, original) {
     if (!list.length && !differs(original, corrected)) return el('div', 'ok', '✓ ¡Perfecto! Lo dijiste bien.');
     const box = el('div', 'fixes');
-    box.append(el('div', 'label', list.length === 0 ? 'Se puede decir mejor' : list.length === 1 ? '1 corrección' : `${list.length} correcciones`));
+    box.append(el('div', 'label', list.length === 0 ? 'Mia te sugiere decirlo así' : list.length === 1 ? 'Un consejo de Mia' : `${list.length} consejos de Mia`));
     for (const c of list) {
       const f = el('div', 'fix');
       const pair = el('div', 'pair');
@@ -652,7 +709,7 @@ ${mistakes}`;
     const t = text.toLowerCase().trim();
     // El modelo pequeño a veces confunde su nombre con el tuyo: se lo recordamos.
     if (/\b(what('s| is) your name|who are you|your name)\b/.test(t)) {
-      return { note: 'Your name is Mia. You are an English teacher. Say your name is Mia.', source: null };
+      return { note: 'Your name is Mia. You are the learner\'s friend. Say your name is Mia.', source: null };
     }
     if (/\b(what|which)\b.*\b(day|date|time|year|month)\b|\btoday'?s date\b|\bwhat time\b/.test(t) && !/\bweather\b/.test(t)) {
       return dateTimeInfo();
@@ -688,7 +745,7 @@ ${mistakes}`;
     const userMsg = {
       role: 'user',
       content: greet
-        ? `(The learner just opened the app. Greet them formally in one short sentence${memory.facts.length ? ' that mentions something you remember about them' : ' and ask for their name'}, then start the scenario with one simple question. understood must be true, corrections [] and corrected_sentence "".)`
+        ? `(The learner just opened the app. Greet them like a friend who is happy to see them, in one short sentence${memory.facts.length ? ' that mentions something you remember about them' : ' and ask for their name'}, then ask one simple question to start chatting. understood must be true, corrections [] and corrected_sentence "".)`
         : text,
     };
     // ¿Necesita información de internet? Se agrega como nota, marcada para que no se corrija.
@@ -740,7 +797,7 @@ ${mistakes}`;
       // Si Mia no entendió, no corrige ni recuerda nada: solo pide que lo repitas.
       const unclear = !greet && r.understood === false;
       if (unclear) log('Mia no entendió: "' + text.slice(0, 60) + '"');
-      if (mine) mine.append(unclear ? el('div', 'unclear', 'Mia no te entendió. Repítelo, por favor.') : renderCorrections(r.corrections, r.corrected_sentence, text));
+      if (mine) mine.append(unclear ? el('div', 'unclear', 'Mia no te entendió bien. Díselo otra vez.') : renderCorrections(r.corrections, r.corrected_sentence, text));
       scrollDown();
 
       const now = new Date().toISOString();
@@ -977,7 +1034,7 @@ ${mistakes}`;
   // ---------- Inicio ----------
   function renderHistory() {
     for (const m of memory.messages.slice(-30)) {
-      if (m.role === 'user' && m.unclear) { const w = addMe(m.text); w.append(el('div', 'unclear', 'Mia no te entendió. Repítelo, por favor.')); }
+      if (m.role === 'user' && m.unclear) { const w = addMe(m.text); w.append(el('div', 'unclear', 'Mia no te entendió bien. Díselo otra vez.')); }
       else if (m.role === 'user') addMe(m.text, m.corrections || [], m.corrected);
       else { addMia(m.text); lastMia = m.text; }
     }
