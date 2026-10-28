@@ -22,7 +22,6 @@
       <span class="name">Mia</span>
       <span class="status" id="statusText">en línea</span>
     </div>
-    <button class="chip" id="scenarioChip" type="button" aria-label="Cambiar escenario">Charla libre</button>
     <button class="icon-btn" id="settingsBtn" type="button" aria-label="Ajustes y memoria">
       <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M4 7h10.2a3 3 0 0 0 5.6 0H20a1 1 0 1 0 0-2h-.2a3 3 0 0 0-5.6 0H4a1 1 0 0 0 0 2Zm13-2a1 1 0 1 1 0 2 1 1 0 0 1 0-2ZM20 11h-8.2a3 3 0 0 0-5.6 0H4a1 1 0 1 0 0 2h2.2a3 3 0 0 0 5.6 0H20a1 1 0 1 0 0-2Zm-11 2a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm11 4h-2.2a3 3 0 0 0-5.6 0H4a1 1 0 1 0 0 2h8.2a3 3 0 0 0 5.6 0H20a1 1 0 1 0 0-2Zm-5 2a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/></svg>
     </button>
@@ -64,7 +63,7 @@
 <div class="splash" id="splash">
   <div class="splash-card">
     <h1>English Buddy</h1>
-    <p>Habla con Mia en inglés de la vida diaria. Ella te responde en voz alta y, después de cada frase, te muestra qué corregir. La IA funciona dentro de tu celular.</p>
+    <p>Conversa en inglés con Mia, tu amiga. Ella te escucha, te responde en voz alta y recuerda lo que le cuentas. La IA funciona dentro de tu dispositivo.</p>
     <p class="model-line" id="modelLine">Revisando la GPU del celular…</p>
     <div class="progress" id="progress" hidden>
       <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
@@ -82,21 +81,6 @@
       <h2>Ajustes</h2>
       <button class="icon-btn" id="closeSettings" type="button" aria-label="Cerrar">✕</button>
     </div>
-
-    <div class="field">
-      <label for="scenarioSel">Escenario</label>
-      <select id="scenarioSel">
-        <option value="free">Charla libre</option>
-        <option value="coffee">Cafetería</option>
-        <option value="restaurant">Restaurante</option>
-        <option value="shopping">Tienda de ropa</option>
-        <option value="doctor">Médico</option>
-        <option value="airport">Aeropuerto</option>
-        <option value="directions">Pedir direcciones</option>
-        <option value="smalltalk">Small talk con un vecino</option>
-        <option value="interview">Entrevista de trabajo</option>
-      </select>
-    </div>
     <div class="field">
       <label for="modelSel">Modelo de IA</label>
       <select id="modelSel"></select>
@@ -109,25 +93,10 @@
       <label for="rateRange">Velocidad <span id="rateVal">1.0×</span></label>
       <input id="rateRange" type="range" min="0.6" max="1.3" step="0.05" value="1">
     </div>
-    <div class="field">
-      <label for="explainSel">Explicaciones de las correcciones</label>
-      <select id="explainSel">
-        <option value="es">En español</option>
-        <option value="en">En inglés sencillo</option>
-      </select>
-    </div>
-    <label class="toggle"><input id="listenMode" type="checkbox"> <span><b>Modo listening</b><br><small>Oculta el texto de Mia para entrenar el oído. Toca el mensaje para verlo.</small></span></label>
     <label class="toggle"><input id="handsFree" type="checkbox"> <span><b>Manos libres</b><br><small>El micrófono se activa solo cuando Mia termina de hablar.</small></span></label>
 
     <h3>Lo que Mia recuerda de ti</h3>
-    <p class="stats" id="statsLine"></p>
     <ul class="facts" id="factsList"></ul>
-
-    <h3>Tus errores más frecuentes</h3>
-    <ul class="mistakes" id="mistakesList"></ul>
-
-    <h3>Conversaciones anteriores</h3>
-    <ul class="summaries" id="summariesList"></ul>
 
     <h3>Modelos descargados</h3>
     <p class="stats" id="storageLine">Revisando el espacio…</p>

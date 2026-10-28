@@ -1,10 +1,10 @@
 # English Buddy
 
-Practica inglés conversacional de la vida diaria hablando con **Mia**. Ella te responde en voz alta y, después de cada frase tuya, te muestra qué decir mejor. Recuerda lo que le cuentas y tus errores más frecuentes.
+Conversa en inglés con **Mia**, una amiga virtual. Te escucha, te responde en voz alta y recuerda lo que le cuentas.
 
 **La IA corre dentro de tu celular o tu PC** con [WebLLM](https://github.com/mlc-ai/web-llm) (WebGPU) y el modelo pequeño **Gemma 4 E2B**: no hay servidor, ni cuentas, ni costos por uso. La memoria se guarda en tu dispositivo.
 
-Mia habla de forma formal y sencilla. Si no entiende lo que dices, te pide que lo repitas en vez de adivinar.
+Mia es cálida y curiosa, y conversa como una amiga. Si no entiende lo que dices, te pide que lo repitas.
 
 ## Abrirla
 
@@ -30,10 +30,9 @@ Escanea el código con la cámara del celular:
 
 ## Funciones
 
-- Speaking y listening: micrófono, voz de Mia con velocidad ajustable y modo *listening* (oculta el texto).
-- Correcciones después de cada frase, con explicación en español y la frase correcta para escuchar.
-- Memoria: datos tuyos, errores frecuentes y resúmenes de conversaciones. Copia de seguridad en un archivo.
-- Escenarios: charla libre, cafetería, restaurante, tienda, médico, aeropuerto, direcciones, small talk y entrevista.
+- Conversación por voz: micrófono, voz de Mia con velocidad ajustable y modo manos libres.
+- **✎ No dije eso:** si el micrófono entendió mal tu última frase, la corriges y Mia responde de nuevo.
+- Memoria: lo que le cuentas sobre ti. Puedes verlo, borrarlo y guardar una copia en un archivo.
 - Información actual: fecha y hora (de tu dispositivo), clima ([Open-Meteo](https://open-meteo.com)) y datos generales ([Wikipedia](https://en.wikipedia.org)). Pregunta, por ejemplo, *"What's the weather in Bogotá?"* o *"Who was Gabriel García Márquez?"*. Debajo de la respuesta aparece la fuente.
 
 ## Archivos

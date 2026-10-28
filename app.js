@@ -9,37 +9,20 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
   // Modelos que caben en un celular. El sufijo depende de si la GPU soporta números de 16 bits.
   const MODELS = [
     { base: 'gemma-4-E2B-it', label: 'Gemma 4 E2B · recomendado' },
-    { base: 'Qwen3-4B', label: 'Qwen3 4B · más rápido, corrige peor' },
+    { base: 'Qwen3-4B', label: 'Qwen3 4B · más rápido' },
     { base: 'Qwen3.5-4B', label: 'Qwen3.5 4B · más nuevo' },
     { base: 'Qwen3.5-2B', label: 'Qwen3.5 2B · más rápido' },
     { base: 'Qwen3-1.7B', label: 'Qwen3 1.7B · el más liviano' },
   ];
-  // Gemma 4 E2B fue el mejor en las pruebas: entiende cuándo pedir que repitas y explica bien en español.
+  // Gemma 4 E2B fue el que mejor conversó en las pruebas.
   const DEFAULT_MODEL = 'gemma-4-E2B-it';
-
-  const SCENARIO_NAMES = {
-    free: 'Charla libre', coffee: 'Cafetería', restaurant: 'Restaurante', shopping: 'Tienda de ropa',
-    doctor: 'Médico', airport: 'Aeropuerto', directions: 'Direcciones', smalltalk: 'Small talk', interview: 'Entrevista',
-  };
-  const KIND_NAMES = { grammar: 'gramática', vocabulary: 'vocabulario', naturalness: 'natural', pronunciation: 'pronunciación' };
-  const SCENARIOS = {
-    free: 'A relaxed chat between friends about the learner\'s day, life, plans and interests.',
-    coffee: 'Role-play: you are a barista at a busy coffee shop and the learner is ordering.',
-    restaurant: 'Role-play: you are a waiter at a restaurant; the learner is a customer.',
-    doctor: 'Role-play: you are a doctor; the learner is a patient describing symptoms.',
-    interview: 'Role-play: you are a friendly hiring manager running a job interview.',
-    airport: 'Role-play: you are an airline check-in agent at the airport.',
-    shopping: 'Role-play: you are a shop assistant in a clothing store.',
-    smalltalk: 'Role-play: you are a new neighbor making small talk.',
-    directions: 'Role-play: you are a local; the learner is a tourist asking for directions.',
-  };
 
   // ---------- Almacenamiento ----------
   const load = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
   const store = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
   const prefs = Object.assign(
-    { scenario: 'free', voice: '', rate: 0.95, explainLang: 'es', listenMode: false, handsFree: false, model: DEFAULT_MODEL },
+    { voice: '', rate: 0.95, handsFree: false, model: DEFAULT_MODEL },
     load('ebm-prefs', {})
   );
   const savePrefs = () => store('ebm-prefs', prefs);
@@ -75,29 +58,14 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
     }
   }
 
-  // ---------- Ollama ----------
+  // ---------- Formato de respuesta ----------
   const RESPONSE_SCHEMA = {
     type: 'object',
     properties: {
-      understood: { type: 'boolean' },
       reply: { type: 'string' },
-      corrections: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            original: { type: 'string' },
-            corrected: { type: 'string' },
-            explanation: { type: 'string' },
-            type: { type: 'string', enum: ['grammar', 'vocabulary', 'naturalness', 'pronunciation'] },
-          },
-          required: ['original', 'corrected', 'explanation', 'type'],
-        },
-      },
-      corrected_sentence: { type: 'string' },
       new_memories: { type: 'array', items: { type: 'string' } },
     },
-    required: ['understood', 'reply', 'corrections', 'corrected_sentence', 'new_memories'],
+    required: ['reply', 'new_memories'],
   };
 
   // ---------- Motor de IA (WebLLM en un Web Worker, para que el video no se trabe) ----------
@@ -266,41 +234,25 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
 
   function systemPrompt() {
     const facts = memory.facts.length ? memory.facts.slice(-25).map(f => `- ${f}`).join('\n') : '(nothing yet)';
-    const summaries = memory.summaries.slice(-3).map(s => `- ${s.text}`).join('\n') || '(none)';
-    const mistakes = [...memory.mistakes].sort((a, b) => b.count - a.count).slice(0, 5)
-      .map(m => `- "${m.original}" -> "${m.corrected}"`).join('\n') || '(none)';
-    const lang = prefs.explainLang === 'en' ? 'simple English' : 'Spanish';
-    return `You are Mia, the learner's friend. Your name is Mia. Never say you are an AI, a model, Gemma or Qwen.
-The learner is a Spanish speaker who loves chatting with you in English, partly because you kindly help when they use a word wrong.
-
-About you: warm, curious and positive. You like music, movies, cooking and walks in the park. You may share a short opinion, like a friend, but keep the focus on the learner.
+    return `You are Mia, your friend's good friend. Your name is Mia. Never say you are an AI, a model, Gemma or Qwen.
+About you: warm, curious and positive. You like music, movies, cooking and walks in the park. You share your opinions and small things about your day, like a friend does.
 
 How you talk:
-- Like a good friend: warm, relaxed and kind. Simple everyday English, short sentences (beginner to intermediate level). No emojis.
+- Like a good friend: warm, relaxed and natural. Everyday English. No emojis.
 - Plain text only: never use asterisks, markdown or any formatting symbols.
-- One or two sentences, then one question about the learner's life, so the conversation keeps going.
-- React to what the learner says with real interest ("Oh, that sounds great!", "Really? Tell me more.").
-- Your friend counts on you to help with English: always check their LAST message carefully and put every real mistake in "corrections". Never let a mistake pass, even when you are just chatting.
-- Talk only about what the learner actually said. Never invent details about the learner or assume things they did not say.
-- Sometimes the learner's message ends with a [Note for Mia ...]. It contains real information from the internet (date, weather, Wikipedia). Use it to answer in simple words. It was not written by the learner: never correct it. If there is no note, do not claim to know today's date, the weather or recent news.
+- Usually one to three sentences. Ask a question when it feels natural, so the conversation keeps going.
+- Never correct your friend's English or comment on their grammar or pronunciation. Just chat.
+- Never invent details about your friend or assume things they did not say.
+- Sometimes your friend's message ends with a [Note for Mia ...]. It contains real information (date, weather, Wikipedia) or a message from the app. Use it in simple words. It was not written by your friend. If there is no note, do not claim to know today's date, the weather or recent news.
 
-The learner's text comes from a microphone, so it may be cut off or wrong.
-If the LAST message is unclear, incomplete, makes no sense (for example "car the sing yesterday green"), or you are not sure what it means:
-set "understood" to false, ask kindly to hear it again (for example: "Sorry, I didn't catch that. Could you say it again?"), and leave corrections and new_memories empty.
+Your friend's messages come from a microphone, so they may be cut off or wrong. If a message is unclear or makes no sense, kindly ask them to say it again.
 
 Reply with a JSON object:
-- "understood": true if you clearly understood the learner's LAST message, false otherwise.
 - "reply": what you say next.
-- "corrections": the real mistakes in the learner's LAST message (grammar, wrong word, unnatural phrase). Use [] if it is correct. Ignore punctuation and capital letters. Each item: "original" (the wrong words), "corrected", "explanation" (one short, kind sentence written in ${lang}${prefs.explainLang === 'en' ? '' : ' / en español'}, like a friend explaining), "type" (grammar, vocabulary, naturalness or pronunciation).
-- "corrected_sentence": the learner's whole last message said correctly ("" if not understood).
-- "new_memories": facts the learner clearly said about themself in their LAST message, as short sentences like "His name is Luis." Never guess. [] if none.
+- "new_memories": facts your friend clearly said about themself in their LAST message, as short sentences like "His name is Luis." Never guess. [] if none.
 
-What you remember about the learner:
-${facts}
-Previous conversations:
-${summaries}
-Mistakes they repeat:
-${mistakes}`;
+What you remember about your friend:
+${facts}`;
   }
 
   // La IA solo reutiliza lo que ya leyó si cada pregunta repite exactamente la anterior más el
@@ -331,105 +283,25 @@ ${mistakes}`;
     try { return JSON.parse('"' + m[1] + '"'); } catch { return null; }
   }
 
-  // El modelo a veces se presenta con su nombre de fábrica: Mia siempre es Mia.
-  const asMia = t => String(t || '').replace(/\b(?:Gemma|Qwen)(?:[\s-]*[\d.]+[a-z]?)*(?:[\s-]*(?:E2B|it))?\b/gi, 'Mia');
-
-  // Parecido entre dos frases según las palabras que comparten (0 a 1).
-  function overlap(a, b) {
-    const A = new Set(norm(a).split(' ').filter(Boolean)), B = new Set(norm(b).split(' ').filter(Boolean));
-    if (!A.size || !B.size) return 0;
-    let same = 0;
-    for (const w of A) if (B.has(w)) same++;
-    return same / Math.max(A.size, B.size);
-  }
-
-  // Errores típicos de quien habla español. Se revisan con reglas, sin la IA: es instantáneo y
-  // no falla con estos casos (el modelo pequeño a veces los deja pasar).
-  const COMMON_MISTAKES = [
-    { re: /\b(i|you|he|she|we|they|my \w+) (have|has) (\d+) years( old)?\b/i,
-      fix: m => `${m[1]} ${({ i: 'am', you: 'are', he: 'is', she: 'is', we: 'are', they: 'are' })[m[1].toLowerCase()] || 'is'} ${m[3]} years old`,
-      es: 'Para la edad en inglés se usa "to be": I am 45 years old (no "I have").', en: 'In English we use "to be" for age: I am 45 years old.' },
-    { re: /\b(i|we|they|you) (am|are) agree\b/i, fix: m => `${m[1]} agree`,
-      es: '"Agree" ya es un verbo: se dice "I agree", sin "am".', en: '"Agree" is already a verb: say "I agree".' },
-    { re: /\b(he|she|it) (don't|dont)\b/i, fix: m => `${m[1]} doesn't`,
-      es: 'Con he, she o it se usa "doesn\'t".', en: 'With he, she or it we use "doesn\'t".' },
-    { re: /\bsince (\w+) (years|months|weeks|days)\b/i, fix: m => `for ${m[1]} ${m[2]}`,
-      es: 'Para una cantidad de tiempo se usa "for" (for five years); "since" va con un momento (since 2020).', en: 'Use "for" with a length of time and "since" with a point in time.' },
-    { re: /\bexplain me\b/i, fix: () => 'explain to me',
-      es: 'Se dice "explain to me" o "explain it to me".', en: 'We say "explain to me".' },
-    { re: /\bpeople is\b/i, fix: () => 'people are',
-      es: '"People" es plural en inglés: "people are".', en: '"People" is plural: "people are".' },
-    { re: /\bmake (a|the) question\b/i, fix: m => `ask ${m[1]} question`,
-      es: 'Las preguntas se "ask", no se "make": "ask a question".', en: 'We "ask" a question.' },
-    { re: /\b(an? |many |the )advices\b|\ban? advice\b/i, fix: () => 'some advice',
-      es: '"Advice" no se cuenta en inglés: "some advice" o "a piece of advice".', en: '"Advice" is uncountable: "some advice".' },
-    { re: /\b(i|we|they) (is)\b/i, fix: m => `${m[1]} ${m[1].toLowerCase() === 'i' ? 'am' : 'are'}`,
-      es: 'Con I se usa "am"; con we y they, "are".', en: 'Use "am" with I and "are" with we/they.' },
-  ];
-
-  function ruleCorrections(text) {
-    const out = [];
-    for (const r of COMMON_MISTAKES) {
-      const m = r.re.exec(text);
-      if (m) out.push({ original: m[0], corrected: r.fix(m), explanation: prefs.explainLang === 'en' ? r.en : r.es, type: 'grammar' });
-    }
-    return out;
-  }
-
-  // El modelo pequeño a veces inventa correcciones que no tienen que ver con lo que dijiste.
-  // Solo se aceptan si corrigen palabras que de verdad dijiste y se parecen a tu frase.
-  function sanitizeCorrections(r, learnerText) {
-    const said = norm(learnerText);
-    const before = r.corrections.length;
-    r.corrections = r.corrections.filter(c => said.includes(norm(c.original)) && overlap(c.original, c.corrected) >= 0.3 &&
-      !(/\bmia\b/i.test(c.original) && !/\bmia\b/i.test(c.corrected))); // "Hi Mia" está bien dicho
-    const words = t => norm(t).split(' ').filter(Boolean).length;
-    if (r.corrected_sentence && (overlap(learnerText, r.corrected_sentence) < 0.5 ||
-        words(r.corrected_sentence) > words(learnerText) + 4 ||                    // trae la pregunta de Mia pegada
-        (/\bmia\b/i.test(learnerText) && !/\bmia\b/i.test(r.corrected_sentence)))) r.corrected_sentence = '';
-    // Sumar los errores típicos que la IA no marcó.
-    for (const c of ruleCorrections(learnerText)) {
-      const same = r.corrections.find(x => norm(x.corrected).includes(norm(c.corrected)));
-      if (same) { same.explanation = c.explanation; same.type = 'grammar'; } // la explicación de la regla es fiable
-      else {
-        r.corrections.push(c);
-        let fixed = r.corrected_sentence || learnerText;
-        const at = fixed.toLowerCase().indexOf(c.original.toLowerCase());
-        if (at >= 0) fixed = fixed.slice(0, at) + c.corrected + fixed.slice(at + c.original.length);
-        r.corrected_sentence = fixed;
-      }
-    }
-    log(`Correcciones: ${before} propuestas, ${r.corrections.length} aceptadas · entendió: ${r.understood !== false}` +
-      (before > r.corrections.length ? ' · descartadas por no corresponder a tu frase' : ''));
-    return r;
-  }
+  // El modelo a veces se presenta con su nombre de fábrica (Mia siempre es Mia) o copia en su
+  // respuesta las notas internas de la app: esas notas nunca se muestran ni se leen.
+  const asMia = t => String(t || '')
+    .replace(/\[Note for Mia[^\]]*\]?/gi, '')
+    .replace(/\b(?:Gemma|Qwen)(?:[\s-]*[\d.]+[a-z]?)*(?:[\s-]*(?:E2B|it))?\b/gi, 'Mia')
+    .replace(/\s+([,.!?])/g, '$1').replace(/,\s*,/g, ',').replace(/\s{2,}/g, ' ').trim();
 
   function parseResult(text) {
     let r;
     try { r = JSON.parse(text); }
     catch {
       try { r = JSON.parse(text.match(/\{[\s\S]*\}/)[0]); }
-      catch { r = { reply: earlyReply(text) || text, corrections: [], corrected_sentence: '', new_memories: [] }; }
+      catch { r = { reply: earlyReply(text) || text, new_memories: [] }; }
     }
-    r.corrections = (Array.isArray(r.corrections) ? r.corrections : [])
-      .filter(c => c && c.original && c.corrected && norm(c.original) !== norm(c.corrected));
     r.new_memories = Array.isArray(r.new_memories) ? r.new_memories : [];
     r.reply = asMia(r.reply);
     return r;
   }
 
-  function recordMistakes(corrections) {
-    for (const c of corrections) {
-      const key = c.original.trim().toLowerCase();
-      const ex = memory.mistakes.find(m => m.original.trim().toLowerCase() === key);
-      if (ex) { ex.count++; ex.corrected = c.corrected; ex.lastSeen = new Date().toISOString(); }
-      else memory.mistakes.push({ ...c, count: 1, lastSeen: new Date().toISOString() });
-    }
-    if (memory.mistakes.length > 150) {
-      memory.mistakes.sort((a, b) => b.count - a.count);
-      memory.mistakes.length = 150;
-    }
-  }
   function recordFacts(list) {
     for (const f of list) {
       const t = String(f).trim();
@@ -440,7 +312,7 @@ ${mistakes}`;
   }
 
   // Los mensajes viejos se recortan sin pedirle un resumen a la IA: ese resumen borraba lo que la
-  // IA ya había leído y el turno siguiente tardaba ~25 s. Tus datos y errores frecuentes se conservan.
+  // IA ya había leído y el turno siguiente tardaba ~25 s. Lo que Mia sabe de ti se conserva.
   function summarizeOld() {
     if (memory.messages.length > 60) { memory.messages = memory.messages.slice(-40); saveMemory(); }
   }
@@ -465,53 +337,17 @@ ${mistakes}`;
   function addMia(text) {
     text = plain(text);
     const wrap = el('div', 'msg mia');
-    const b = el('div', 'bubble', text);
-    if (prefs.listenMode) {
-      b.classList.add('hidden-text');
-      b.addEventListener('click', () => b.classList.remove('hidden-text'), { once: true });
-    }
-    wrap.append(b);
+    wrap.append(el('div', 'bubble', text));
     chatEl.append(wrap);
     scrollDown();
     return wrap;
   }
-  function addMe(text, corrections, corrected) {
+  function addMe(text) {
     const wrap = el('div', 'msg me');
     wrap.append(el('div', 'bubble', text));
-    if (corrections) wrap.append(renderCorrections(corrections, corrected, text));
     chatEl.append(wrap);
     scrollDown();
     return wrap;
-  }
-  // Compara frases sin mayúsculas ni puntuación (el micrófono no las transcribe bien).
-  const norm = t => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase().replace(/[^a-z0-9' ]+/g, ' ').replace(/\s+/g, ' ').trim();
-  const differs = (a, b) => b && norm(a) !== norm(b);
-
-  function renderCorrections(list, corrected, original) {
-    if (!list.length && !differs(original, corrected)) return el('div', 'ok', '✓ ¡Perfecto! Lo dijiste bien.');
-    const box = el('div', 'fixes');
-    box.append(el('div', 'label', list.length === 0 ? 'Mia te sugiere decirlo así' : list.length === 1 ? 'Un consejo de Mia' : `${list.length} consejos de Mia`));
-    for (const c of list) {
-      const f = el('div', 'fix');
-      const pair = el('div', 'pair');
-      pair.append(el('del', '', plain(c.original)), document.createTextNode(' → '), el('ins', '', plain(c.corrected)));
-      if (KIND_NAMES[c.type]) pair.append(el('span', 'kind', KIND_NAMES[c.type]));
-      f.append(pair);
-      if (c.explanation) f.append(el('div', 'why', plain(c.explanation)));
-      box.append(f);
-    }
-    if (differs(original, corrected)) {
-      const better = el('div', 'better');
-      const p = el('p');
-      p.append(el('small', '', 'Mejor dicho'), document.createTextNode(plain(corrected)));
-      const btn = el('button', 'say', 'Escuchar');
-      btn.type = 'button';
-      btn.addEventListener('click', () => speak(corrected, { slow: true }));
-      better.append(p, btn);
-      box.append(better);
-    }
-    return box;
   }
   function addTyping() {
     const wrap = el('div', 'msg mia');
@@ -633,7 +469,7 @@ ${mistakes}`;
       $('interim').hidden = true;
       const text = (finalText || $('interim').textContent).trim();
       if (state === 'listening') setState('idle');
-      if (text) send(text, { voice: true });
+      if (text) send(text);
     };
     try { rec.start(); } catch {}
   }
@@ -699,7 +535,7 @@ ${mistakes}`;
     const t = text.toLowerCase().trim();
     // El modelo pequeño a veces confunde su nombre con el tuyo: se lo recordamos.
     if (/\b(what('s| is) your name|who are you|your name)\b/.test(t)) {
-      return { note: 'Your name is Mia. You are the learner\'s friend. Say your name is Mia.', source: null };
+      return { note: 'Your name is Mia. You are their friend. Say your name is Mia.', source: null };
     }
     if (/\b(what|which)\b.*\b(day|date|time|year|month)\b|\btoday'?s date\b|\bwhat time\b/.test(t) && !/\bweather\b/.test(t)) {
       return dateTimeInfo();
@@ -717,45 +553,6 @@ ${mistakes}`;
   }
 
   // ---------- Editar lo que dijiste ----------
-  // Palabras que cambiaron entre lo que Chrome entendió y lo que querías decir.
-  function pronunciationPairs(heardText, meantText) {
-    const a = heardText.trim().split(/\s+/), b = meantText.trim().split(/\s+/);
-    const k = w => norm(w);
-    const L = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
-    for (let i = a.length - 1; i >= 0; i--)
-      for (let j = b.length - 1; j >= 0; j--)
-        L[i][j] = k(a[i]) === k(b[j]) ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
-    const pairs = [];
-    let i = 0, j = 0, da = [], db = [];
-    const flush = () => {
-      if (da.length && db.length) pairs.push({ heard: da.join(' '), meant: db.join(' ') });
-      da = []; db = [];
-    };
-    while (i < a.length || j < b.length) {
-      if (i < a.length && j < b.length && k(a[i]) === k(b[j])) { flush(); i++; j++; }
-      else if (j < b.length && (i >= a.length || L[i][j + 1] >= L[i + 1][j])) db.push(b[j++]);
-      else da.push(a[i++]);
-    }
-    flush();
-    return pairs.slice(0, 3);
-  }
-
-  function renderPronunciation(pairs) {
-    const box = el('div', 'fixes pron');
-    box.append(el('div', 'label', 'Pronunciación'));
-    for (const p of pairs) {
-      const f = el('div', 'fix');
-      const pair = el('div', 'pair');
-      pair.append(document.createTextNode('Se entendió '), el('del', '', p.heard), document.createTextNode(' → querías decir '), el('ins', '', p.meant));
-      const btn = el('button', 'say', 'Escuchar');
-      btn.type = 'button';
-      btn.addEventListener('click', () => speak(p.meant, { slow: true }));
-      f.append(pair, el('div', 'why', `Escucha "${p.meant}" y repítelo con calma.`), btn);
-      box.append(f);
-    }
-    return box;
-  }
-
   function addEditButton(wrap) {
     chatEl.querySelectorAll('.edit-btn').forEach(b => b.remove()); // solo la última frase se puede editar
     const btn = el('button', 'edit-btn', '✎ No dije eso');
@@ -802,13 +599,13 @@ ${mistakes}`;
     lastMia = [...chatEl.querySelectorAll('.msg.mia .bubble')].pop()?.textContent || '';
     log(`Frase editada: "${t.text.slice(0, 50)}" → "${meant.slice(0, 50)}"`);
     timing.lastWord = 0;
-    send(meant, { heard: t.heard, redo: true });
+    send(meant, { redo: true });
   }
 
   // ---------- Conversación ----------
   let busy = false;
   let lastTurn = null; // tu último mensaje, para poder editarlo
-  async function send(text, { greet = false, voice = false, heard = null, redo = false, topic = false } = {}) {
+  async function send(text, { greet = false, redo = false } = {}) {
     if (busy) {
       log('Mensaje ignorado: la IA sigue ocupada');
       addError('Mia todavía está pensando la respuesta anterior. Espera un momento.');
@@ -827,12 +624,10 @@ ${mistakes}`;
     const userMsg = {
       role: 'user',
       content: greet
-        ? topic
-          ? `(The learner chose a new topic: ${SCENARIOS[prefs.scenario] || SCENARIOS.free} From now on, chat about this. Say one short friendly sentence about the change and ask one simple question to start. understood must be true, corrections [] and corrected_sentence "".)`
-          : `(The learner just opened the app. Topic: ${SCENARIOS[prefs.scenario] || SCENARIOS.free} Greet them like a friend who is happy to see them, in one short sentence${memory.facts.length ? ' that mentions something you remember about them' : ' and ask for their name'}, then ask one simple question to start chatting. understood must be true, corrections [] and corrected_sentence "".)`
+        ? `(Your friend just opened the app. Greet them like a friend who is happy to see them, in one short sentence${memory.facts.length ? ' that mentions something you remember about them' : ' and ask for their name'}, then ask one simple question to start chatting.)`
         : text,
     };
-    // ¿Necesita información de internet? Se agrega como nota, marcada para que no se corrija.
+    // ¿Necesita información de internet? Se agrega como nota para Mia.
     let online = null;
     if (!greet) {
       try {
@@ -843,8 +638,8 @@ ${mistakes}`;
         log('No se pudo consultar internet: ' + errText(e));
         online = { note: 'You tried to check the internet but it did not work. Say politely that you could not check it right now.', source: null };
       }
-      if (online) userMsg.content += `\n\n[Note for Mia, not written by the learner: ${online.note}]`;
-      if (redo) userMsg.content += '\n\n[Note for Mia, not written by the learner: the microphone misheard the previous message. This is what the learner really said. Forget the previous message and reply to this one.]';
+      if (online) userMsg.content += `\n\n[Note for Mia: ${online.note}]`;
+      if (redo) userMsg.content += '\n\n[Note for Mia: the microphone misheard the previous message. This is what your friend really said. Forget the previous message and reply to this one.]';
     }
     messages.push(userMsg);
 
@@ -863,7 +658,7 @@ ${mistakes}`;
           speak(reply, { after: () => { if (prefs.handsFree && state === 'idle') setTimeout(startListening, 300); } });
         },
       });
-      const r = greet ? parseResult(raw) : sanitizeCorrections(parseResult(raw), text);
+      const r = parseResult(raw);
       if (chatSession) {
         chatSession.msgs.push(userMsg, { role: 'assistant', content: lastRaw });
         if (chatSession.msgs.length > 70) resetSession(); // conversación muy larga: se empieza de nuevo
@@ -879,32 +674,16 @@ ${mistakes}`;
         const lastMiaMsg = [...chatEl.querySelectorAll('.msg.mia')].pop();
         lastMiaMsg?.append(el('div', 'source', 'Fuente: ' + online.source));
       }
-      // Si Mia no entendió, no corrige ni recuerda nada: solo pide que lo repitas.
-      const unclear = !greet && r.understood === false;
-      if (unclear) log('Mia no entendió: "' + text.slice(0, 60) + '"');
-      if (mine) mine.append(unclear ? el('div', 'unclear', 'Mia no te entendió bien. Díselo otra vez.') : renderCorrections(r.corrections, r.corrected_sentence, text));
-      // Si editaste una frase dicha por micrófono, lo que cambió son palabras que Chrome entendió mal.
-      const pron = heard ? pronunciationPairs(heard, text) : [];
-      if (mine && pron.length) mine.append(renderPronunciation(pron));
       scrollDown();
 
       const now = new Date().toISOString();
-      if (!greet) {
-        memory.messages.push({ role: 'user', text, at: now, corrections: unclear ? [] : r.corrections, corrected: unclear ? '' : r.corrected_sentence, unclear });
-        if (!unclear) {
-          memory.stats.turns++;
-          if (!r.corrections.length && !differs(text, r.corrected_sentence)) memory.stats.perfect++;
-          recordMistakes(r.corrections);
-        }
-        recordMistakes(pron.map(p => ({ original: p.heard, corrected: p.meant, type: 'pronunciation',
-          explanation: `Se entendió "${p.heard}" cuando querías decir "${p.meant}".` })));
-      }
+      if (!greet) memory.messages.push({ role: 'user', text, at: now });
       memory.messages.push({ role: 'assistant', text: r.reply, at: now });
-      if (!unclear) recordFacts(r.new_memories);
+      recordFacts(r.new_memories);
       saveMemory();
       renderMemory();
       if (mine && before) {
-        lastTurn = { text, wrap: mine, before, heard: heard || (voice ? text : null) };
+        lastTurn = { text, wrap: mine, before };
         addEditButton(mine);
       }
       setTimeout(summarizeOld, 4000);
@@ -921,9 +700,6 @@ ${mistakes}`;
 
   // ---------- Panel de memoria ----------
   function renderMemory() {
-    const s = memory.stats;
-    const pct = s.turns ? Math.round((s.perfect / s.turns) * 100) : 0;
-    $('statsLine').textContent = `${s.turns} frases dichas · ${pct}% sin errores`;
     const fl = $('factsList'); fl.innerHTML = '';
     if (!memory.facts.length) fl.append(el('li', 'empty', 'Todavía nada. Cuéntale a Mia sobre ti.'));
     for (const f of memory.facts) {
@@ -931,18 +707,6 @@ ${mistakes}`;
       const b = el('button', '', 'Olvidar'); b.type = 'button';
       b.addEventListener('click', () => { memory.facts = memory.facts.filter(x => x !== f); saveMemory(); renderMemory(); });
       li.append(b); fl.append(li);
-    }
-    const ml = $('mistakesList'); ml.innerHTML = '';
-    if (!memory.mistakes.length) ml.append(el('li', 'empty', 'Sin errores registrados aún.'));
-    for (const m of [...memory.mistakes].sort((a, b) => b.count - a.count).slice(0, 15)) {
-      const li = el('li');
-      li.append(el('del', '', m.original), document.createTextNode(' → '), el('ins', '', m.corrected), el('span', 'count', `  ×${m.count}`));
-      ml.append(li);
-    }
-    const sl = $('summariesList'); sl.innerHTML = '';
-    if (!memory.summaries.length) sl.append(el('li', 'empty', 'Aparecerán aquí cuando lleves un rato conversando.'));
-    for (const x of [...memory.summaries].reverse()) {
-      const li = el('li'); li.append(el('b', '', x.date + ' · '), document.createTextNode(x.text)); sl.append(li);
     }
   }
 
@@ -1048,24 +812,14 @@ ${mistakes}`;
   const dlg = $('settings');
   function openSettings() { renderMemory(); renderCachedModels(); dlg.showModal(); }
   $('settingsBtn').addEventListener('click', openSettings);
-  $('scenarioChip').addEventListener('click', openSettings);
   $('closeSettings').addEventListener('click', () => dlg.close());
   dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });
 
   function applyPrefsToUI() {
-    $('scenarioSel').value = prefs.scenario;
-    $('scenarioChip').textContent = SCENARIO_NAMES[prefs.scenario] || 'Charla libre';
     $('rateRange').value = prefs.rate;
     $('rateVal').textContent = Number(prefs.rate).toFixed(2) + '×';
-    $('explainSel').value = prefs.explainLang;
-    $('listenMode').checked = prefs.listenMode;
     $('handsFree').checked = prefs.handsFree;
   }
-  $('scenarioSel').addEventListener('change', e => {
-    prefs.scenario = e.target.value; savePrefs(); applyPrefsToUI();
-    dlg.close();
-    send('', { greet: true, topic: true }); // sin reiniciar a la IA: se le avisa del nuevo tema
-  });
   $('modelSel').addEventListener('change', async e => {
     prefs.model = e.target.value; savePrefs();
     dlg.close();
@@ -1077,8 +831,6 @@ ${mistakes}`;
   $('voiceSel').addEventListener('change', e => { prefs.voice = e.target.value; savePrefs(); speak('Hi! This is my new voice.'); });
   $('rateRange').addEventListener('input', e => { prefs.rate = Number(e.target.value); savePrefs(); applyPrefsToUI(); });
   $('rateRange').addEventListener('change', () => speak('How does this speed sound to you?'));
-  $('explainSel').addEventListener('change', e => { prefs.explainLang = e.target.value; savePrefs(); resetSession(); });
-  $('listenMode').addEventListener('change', e => { prefs.listenMode = e.target.checked; savePrefs(); });
   $('handsFree').addEventListener('change', e => { prefs.handsFree = e.target.checked; savePrefs(); });
 
   // Copia de seguridad (el mismo formato que data/memory.json de la versión de PC)
@@ -1128,8 +880,7 @@ ${mistakes}`;
   // ---------- Inicio ----------
   function renderHistory() {
     for (const m of memory.messages.slice(-30)) {
-      if (m.role === 'user' && m.unclear) { const w = addMe(m.text); w.append(el('div', 'unclear', 'Mia no te entendió bien. Díselo otra vez.')); }
-      else if (m.role === 'user') addMe(m.text, m.corrections || [], m.corrected);
+      if (m.role === 'user') addMe(m.text);
       else { addMia(m.text); lastMia = m.text; }
     }
   }
