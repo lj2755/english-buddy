@@ -22,7 +22,7 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
   const store = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
   const prefs = Object.assign(
-    { voice: '', voiceEs: '', rate: 0.95, handsFree: false, model: DEFAULT_MODEL, lang: 'en' },
+    { voice: '', voiceEs: '', rate: 0.95, handsFree: false, model: DEFAULT_MODEL, lang: 'en', stt: 'whisper' },
     load('ebm-prefs', {})
   );
   const savePrefs = () => store('ebm-prefs', prefs);
@@ -467,11 +467,22 @@ ${facts}`;
   })();
 
   // ---------- Reconocimiento de voz ----------
+  // Dos opciones (Ajustes): Whisper, dentro del dispositivo y con detección de idioma, o el de
+  // Chrome, que usa internet y escucha en el idioma del botón EN/ES.
   let rec = null, finalText = '', listening = false;
   function startListening() {
-    if (!SR) { addError('Este navegador no reconoce voz. Usa Google Chrome, o escribe con el teclado.'); return; }
     if (listening || state === 'thinking' || busy) return;
     speechSynthesis?.cancel();
+    if (prefs.stt === 'whisper' && window.AudioWorkletNode && navigator.mediaDevices) listenWhisper();
+    else listenChrome();
+  }
+  function stopListening() {
+    if (whisperRec) whisperRec.finish();
+    else { try { rec?.stop(); } catch {} }
+  }
+
+  function listenChrome() {
+    if (!SR) { addError('Este navegador no reconoce voz. Usa Google Chrome, o escribe con el teclado.'); return; }
     rec = new SR();
     rec.lang = prefs.lang === 'es' ? 'es-CO' : 'en-US';
     rec.interimResults = true;
@@ -511,7 +522,142 @@ ${facts}`;
     };
     try { rec.start(); } catch {}
   }
-  function stopListening() { try { rec?.stop(); } catch {} }
+
+  // ---------- Whisper ----------
+  let stt = null, sttId = 0;
+  const sttPending = new Map();
+  const sttFiles = {};
+  function sttWorker() {
+    if (stt) return stt;
+    const worker = new Worker(new URL('stt-worker.js', import.meta.url), { type: 'module' });
+    const t0 = performance.now();
+    const ready = new Promise((resolve, reject) => {
+      worker.addEventListener('message', ({ data }) => {
+        if (data.type === 'ready') {
+          log(`Whisper listo en ${((performance.now() - t0) / 1000).toFixed(0)} s`);
+          if (!listening) $('interim').hidden = true;
+          resolve();
+        } else if (data.type === 'progress') {
+          sttFiles[data.file] = data;
+          const all = Object.values(sttFiles), loaded = all.reduce((a, f) => a + f.loaded, 0), total = all.reduce((a, f) => a + f.total, 0);
+          $('interim').hidden = false;
+          $('interim').textContent = `Preparando el oído de Mia (solo la primera vez)… ${Math.round(loaded / total * 100)}%`;
+        } else if (data.type === 'result' || data.type === 'error') {
+          const p = sttPending.get(data.id);
+          if (p) { sttPending.delete(data.id); data.type === 'result' ? p.resolve(data) : p.reject(new Error(data.message)); }
+          else if (data.type === 'error') reject(new Error(data.message));
+        }
+      });
+    });
+    worker.postMessage({ type: 'load', device: 'webgpu', model: 'onnx-community/whisper-small', encoder: 'q4' });
+    stt = { worker, ready };
+    ready.catch(e => {
+      log('Whisper no pudo cargar: ' + e.message);
+      stt = null;
+      prefs.stt = 'chrome'; savePrefs(); applyPrefsToUI();
+      addError('No se pudo preparar Whisper en este dispositivo. Uso el reconocimiento de voz de Chrome (botón EN/ES).');
+    });
+    return stt;
+  }
+  function transcribe(audio) {
+    const id = ++sttId;
+    return new Promise((resolve, reject) => {
+      sttPending.set(id, { resolve, reject });
+      stt.worker.postMessage({ type: 'transcribe', id, audio }, [audio.buffer]);
+    });
+  }
+
+  // Graba desde el micrófono hasta que haces una pausa, y devuelve el audio a 16 kHz.
+  const REC_WORKLET = `class Rec extends AudioWorkletProcessor {
+    process(inputs) { const ch = inputs[0][0]; if (ch) this.port.postMessage(ch.slice(0)); return true; }
+  } registerProcessor('rec', Rec);`;
+  let whisperRec = null;
+  async function recordUtterance() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    const ctx = new AudioContext({ sampleRate: 16000 });
+    await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([REC_WORKLET], { type: 'text/javascript' })));
+    const node = new AudioWorkletNode(ctx, 'rec');
+    ctx.createMediaStreamSource(stream).connect(node);
+    node.connect(ctx.destination); // sin esto Chrome no le pasa audio (no escribe nada en la salida: no se oye)
+    return new Promise(resolve => {
+      const chunks = [];
+      let noise = 0.004, speechAt = -1, silentMs = 0, totalMs = 0, done = false, peak = 0;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        node.port.onmessage = null;
+        stream.getTracks().forEach(t => t.stop());
+        ctx.close();
+        whisperRec = null;
+        if (speechAt < 0) { log(`Micrófono: no se oyó voz (volumen máximo ${peak.toFixed(3)}, ruido ${noise.toFixed(3)})`); return resolve(null); }
+        const parts = chunks.slice(Math.max(0, speechAt - 40)); // ~0.3 s antes de que empezaras a hablar
+        const audio = new Float32Array(parts.reduce((n, c) => n + c.length, 0));
+        let o = 0;
+        for (const c of parts) { audio.set(c, o); o += c.length; }
+        resolve(audio);
+      };
+      whisperRec = { finish };
+      node.port.onmessage = ({ data }) => {
+        chunks.push(data);
+        const ms = data.length / 16;
+        totalMs += ms;
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+        const rms = Math.sqrt(sum / data.length);
+        if (rms > peak) peak = rms;
+        if (speechAt < 0) {
+          noise = noise * 0.97 + rms * 0.03; // ruido de fondo
+          if (rms > Math.max(0.02, noise * 3)) { speechAt = chunks.length - 1; timing.lastWord = performance.now(); }
+          else if (totalMs > 8000) finish(); // no dijiste nada
+        } else {
+          if (rms < Math.max(0.012, noise * 2)) silentMs += ms;
+          else { silentMs = 0; timing.lastWord = performance.now(); }
+          if (silentMs > 900 || totalMs > 20000) finish(); // pausa de casi 1 s, o 20 s como máximo
+        }
+      };
+    });
+  }
+
+  // Frases que Whisper a veces "oye" en el silencio o el ruido.
+  const WHISPER_GHOSTS = /^(thank you|thanks for watching|you|bye|gracias|subt[ií]tulos.*|amara\.org.*|\.+|…)[.!]*$/i;
+
+  async function listenWhisper() {
+    const s = sttWorker();
+    listening = true;
+    setState('listening');
+    $('interim').hidden = false;
+    try {
+      if (!(await Promise.race([s.ready.then(() => true), new Promise(r => setTimeout(() => r(false), 50))]))) {
+        await s.ready; // primera vez: se está descargando
+      }
+      $('interim').textContent = 'Te escucho…';
+      const audio = await recordUtterance();
+      timing.micClosed = performance.now();
+      if (!audio) return;
+      $('interim').textContent = 'Entendiendo…';
+      const r = await transcribe(audio);
+      // Whisper en español suele escribir "mía" cuando le hablas a Mia.
+      const text = r.text.trim().replace(/^(¿|¡)?(hola|hey|oye|hi|hello|buenos d[ií]as|buenas tardes|buenas noches),?\s+m[ií]a\b/i, (m) => m.replace(/m[ií]a$/i, 'Mia'));
+      log(`Whisper: "${text.slice(0, 60)}" · ${r.lang === 'es' ? 'español' : 'inglés'} · ${(r.ms / 1000).toFixed(1)} s` +
+        (timing.lastWord ? ` · ${((performance.now() - timing.lastWord) / 1000).toFixed(1)} s desde tu última palabra` : ''));
+      if (!text || WHISPER_GHOSTS.test(text)) return;
+      setLang(r.lang);
+      listening = false;
+      $('interim').hidden = true;
+      if (state === 'listening') setState('idle');
+      send(text);
+    } catch (e) {
+      log('Micrófono (Whisper): ' + errText(e));
+      if (/permission|denied|notallowed/i.test(errText(e))) addError('Permite el micrófono para esta página en Chrome.');
+      else addError('No pude escucharte: ' + (e?.message || errText(e)));
+    } finally {
+      if (listening) {
+        listening = false;
+        $('interim').hidden = true;
+        if (state === 'listening') setState('idle');
+      }
+    }
+  }
 
   // ---------- Información de internet (fecha y hora, clima, Wikipedia) ----------
   // La app detecta estas preguntas con reglas simples y le pasa el dato a Mia junto con la frase.
@@ -812,6 +958,8 @@ ${facts}`;
     $('rateVal').textContent = Number(prefs.rate).toFixed(2) + '×';
     $('handsFree').checked = prefs.handsFree;
     $('langBtn').textContent = prefs.lang.toUpperCase();
+    $('langBtn').hidden = prefs.stt === 'whisper'; // Whisper detecta el idioma solo
+    $('sttSel').value = prefs.stt;
   }
   $('modelSel').addEventListener('change', async e => {
     prefs.model = e.target.value; savePrefs();
@@ -826,6 +974,10 @@ ${facts}`;
   $('rateRange').addEventListener('input', e => { prefs.rate = Number(e.target.value); savePrefs(); applyPrefsToUI(); });
   $('rateRange').addEventListener('change', () => speak('How does this speed sound to you?'));
   $('handsFree').addEventListener('change', e => { prefs.handsFree = e.target.checked; savePrefs(); });
+  $('sttSel').addEventListener('change', e => {
+    prefs.stt = e.target.value; savePrefs(); applyPrefsToUI();
+    if (prefs.stt === 'whisper') sttWorker();
+  });
 
   // Copia de seguridad (el mismo formato que data/memory.json de la versión de PC)
   function backupMsg(t) { const m = $('backupMsg'); m.hidden = false; m.textContent = t; }
@@ -895,6 +1047,7 @@ ${facts}`;
     }
     $('splash').hidden = true;
     log('App lista');
+    if (prefs.stt === 'whisper') sttWorker();
     const last = memory.messages[memory.messages.length - 1];
     const stale = !last || Date.now() - new Date(last.at).getTime() > 3 * 3600e3;
     if (stale) send('', { greet: true });

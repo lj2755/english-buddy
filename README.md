@@ -26,16 +26,17 @@ Escanea el código con la cámara del celular:
 
 - Un celular con WebGPU en Chrome (Android 12+ con GPU reciente; probado para Samsung S23 Ultra).
 - Unos 4 GB de RAM libres para el modelo grande. Si el celular se queda corto, elige uno más liviano en **Ajustes → Modelo de IA**.
-- El reconocimiento de voz de Chrome usa internet. La IA y la voz de Mia no.
+- Todo funciona sin internet después de la primera descarga, salvo la información actual (clima, Wikipedia) y el reconocimiento de voz de Chrome si lo eliges en lugar de Whisper.
 
 ## Funciones
 
 - Conversación por voz: micrófono, voz de Mia con velocidad ajustable y modo manos libres.
-- **Inglés o español:** Mia responde en el idioma en que le hablas, con una voz para cada idioma. El botón **EN/ES** junto al micrófono elige en qué idioma escucha (Chrome no lo detecta solo en la voz); si le escribes en el otro idioma, el micrófono cambia solo.
+- **Inglés o español:** Mia responde en el idioma en que le hablas, con una voz para cada idioma.
+- **Reconocimiento de voz con [Whisper](https://huggingface.co/onnx-community/whisper-small)** dentro de tu dispositivo: detecta solo si hablas en inglés o en español y no necesita internet. La primera vez descarga unos 300 MB. En **Ajustes → Reconocimiento de voz** puedes cambiar al de Chrome (usa internet y el botón **EN/ES**).
 - Memoria: lo que le cuentas sobre ti. Puedes verlo, borrarlo y guardar una copia en un archivo.
 - Información actual: fecha y hora (de tu dispositivo), clima ([Open-Meteo](https://open-meteo.com)) y datos generales ([Wikipedia](https://en.wikipedia.org)). Pregunta, por ejemplo, *"What's the weather in Bogotá?"* o *"¿Quién fue Gabriel García Márquez?"*. Debajo de la respuesta aparece la fuente.
 
 ## Archivos
 
-Es una página estática: `index.html`, `app.js` (lógica), `worker.js` (la IA, en segundo plano), `style.css`, `sw.js` (funciona sin conexión) y los videos de Mia.
+Es una página estática: `index.html`, `app.js` (lógica), `worker.js` (la IA, en segundo plano), `stt-worker.js` (Whisper, en segundo plano), `style.css`, `sw.js` (funciona sin conexión) y los videos de Mia.
 Para probarla en la PC: `python3 -m http.server 8090` y abre http://localhost:8090 en Chrome.
