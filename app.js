@@ -22,7 +22,7 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
   const store = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
   const prefs = Object.assign(
-    { voice: '', rate: 0.95, handsFree: false, model: DEFAULT_MODEL },
+    { voice: '', voiceEs: '', rate: 0.95, handsFree: false, model: DEFAULT_MODEL, lang: 'en' },
     load('ebm-prefs', {})
   );
   const savePrefs = () => store('ebm-prefs', prefs);
@@ -238,12 +238,13 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
 About you: warm, curious and positive. You like music, movies, cooking and walks in the park. You share your opinions and small things about your day, like a friend does.
 
 How you talk:
-- Like a good friend: warm, relaxed and natural. Everyday English. No emojis.
+- Your friend speaks English or Spanish. Always reply in the same language as their LAST message (natural Spanish when they write in Spanish). Notes for Mia are always in English, but that does not change the language.
+- Like a good friend: warm, relaxed and natural. Everyday words. No emojis.
 - Plain text only: never use asterisks, markdown or any formatting symbols.
 - Usually one to three sentences. Ask a question when it feels natural, so the conversation keeps going.
 - Never correct your friend's English or comment on their grammar or pronunciation. Just chat.
 - Never invent details about your friend or assume things they did not say.
-- Sometimes your friend's message ends with a [Note for Mia ...]. It contains real information (date, weather, Wikipedia) or a message from the app. Use it in simple words. It was not written by your friend. If there is no note, do not claim to know today's date, the weather or recent news.
+- Sometimes your friend's message ends with a [Note for Mia ...]. It contains real information (date, weather, Wikipedia) or a message from the app. Use it in simple words. It was not written by your friend: never mention the note. If there is no note, do not claim to know today's date, the weather or recent news.
 
 Your friend's messages come from a microphone, so they may be cut off or wrong. If a message is unclear or makes no sense, kindly ask them to say it again.
 
@@ -287,6 +288,8 @@ ${facts}`;
   // respuesta las notas internas de la app: esas notas nunca se muestran ni se leen.
   const asMia = t => String(t || '')
     .replace(/\[Note for Mia[^\]]*\]?/gi, '')
+    .replace(/\b(according to|as per|based on) (the|my|your|this) (note|information)[,.]?\s*/gi, '')
+    .replace(/\b(seg[uú]n|de acuerdo (con|a)) la (nota|informaci[oó]n)[,.]?\s*/gi, '')
     .replace(/\b(?:Gemma|Qwen)(?:[\s-]*[\d.]+[a-z]?)*(?:[\s-]*(?:E2B|it))?\b/gi, 'Mia')
     .replace(/\s+([,.!?])/g, '$1').replace(/,\s*,/g, ',').replace(/\s{2,}/g, ' ').trim();
 
@@ -360,26 +363,60 @@ ${facts}`;
   }
   function addError(msg) { chatEl.append(el('div', 'error', msg)); scrollDown(); }
 
+  // ---------- Idioma (inglés o español) ----------
+  // Chrome no detecta solo el idioma de la voz: el micrófono escucha en el idioma elegido con el
+  // botón EN/ES. Lo que escribes y lo que responde Mia sí se detecta, y el micrófono lo sigue.
+  const ES_WORDS = new Set(('el la los las de del que y en un una es está estoy estás por para con pero muy qué cómo cuándo dónde ' +
+    'yo tú mi tu te se lo le hoy ayer bien gracias hola quiero tengo hace también porque soy eres somos fue sí ' +
+    'buenos buenas días noches tarde mañana gusta mucho nada algo todo').split(' '));
+  const EN_WORDS = new Set(('the and is are you i to of it that what how my do was have this with for not yes but very hello ' +
+    'thanks today yesterday want can your am be we they he she there good morning night like know about would').split(' '));
+  function detectLang(text) {
+    const t = String(text || '').toLowerCase();
+    if (/[ñ¿¡áéíóú]/.test(t)) return 'es';
+    let es = 0, en = 0;
+    for (const w of t.match(/[a-záéíóúñü']+/g) || []) { if (ES_WORDS.has(w)) es++; if (EN_WORDS.has(w)) en++; }
+    if (es > en) return 'es';
+    if (en > es) return 'en';
+    return null;
+  }
+  const LANG_NAMES = { en: 'English', es: 'Spanish' };
+  function setLang(lang) {
+    if (!LANG_NAMES[lang] || prefs.lang === lang) return;
+    prefs.lang = lang; savePrefs();
+    $('langBtn').textContent = lang.toUpperCase();
+    $('langBtn').setAttribute('aria-label', lang === 'es' ? 'El micrófono escucha en español. Cambiar a inglés' : 'El micrófono escucha en inglés. Cambiar a español');
+    log('Idioma del micrófono: ' + (lang === 'es' ? 'español' : 'inglés'));
+  }
+
   // ---------- Voz de Mia ----------
   let voices = [];
-  function loadVoices() {
-    voices = speechSynthesis.getVoices().filter(v => /^en[-_]/i.test(v.lang));
-    const sel = $('voiceSel');
+  function fillVoiceSelect(sel, list, value) {
     sel.innerHTML = '';
     const auto = el('option', '', 'Automática');
     auto.value = '';
     sel.append(auto);
-    for (const v of voices) {
+    for (const v of list) {
       const o = el('option', '', `${v.name} (${v.lang})`);
       o.value = v.name;
       sel.append(o);
     }
-    sel.value = prefs.voice;
+    sel.value = value;
   }
-  function pickVoice() {
-    if (prefs.voice) { const v = voices.find(v => v.name === prefs.voice); if (v) return v; }
+  function loadVoices() {
+    voices = speechSynthesis.getVoices();
+    fillVoiceSelect($('voiceSel'), voices.filter(v => /^en[-_]/i.test(v.lang)), prefs.voice);
+    fillVoiceSelect($('voiceEsSel'), voices.filter(v => /^es[-_]/i.test(v.lang)), prefs.voiceEs);
+  }
+  function pickVoice(lang = 'en') {
+    const chosen = lang === 'es' ? prefs.voiceEs : prefs.voice;
+    if (chosen) { const v = voices.find(v => v.name === chosen); if (v) return v; }
+    if (lang === 'es') {
+      return voices.find(v => /^es[-_](US|MX|CO|419)/i.test(v.lang) && /google|female|paulina|sabina|dalia|salome/i.test(v.name))
+        || voices.find(v => /^es[-_](US|MX|CO|419)/i.test(v.lang)) || voices.find(v => /^es[-_]/i.test(v.lang)) || null;
+    }
     return voices.find(v => /en[-_]US/i.test(v.lang) && /female|samantha|aria|jenny/i.test(v.name))
-      || voices.find(v => /en[-_]US/i.test(v.lang)) || voices[0] || null;
+      || voices.find(v => /en[-_]US/i.test(v.lang)) || voices.find(v => /^en[-_]/i.test(v.lang)) || null;
   }
   if ('speechSynthesis' in window) { loadVoices(); speechSynthesis.onvoiceschanged = loadVoices; }
 
@@ -390,8 +427,9 @@ ${facts}`;
     if (!('speechSynthesis' in window) || !text) { after?.(); return; }
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
-    const v = pickVoice();
-    if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-US';
+    const lang = detectLang(text) || prefs.lang;
+    const v = pickVoice(lang);
+    if (v) { u.voice = v; u.lang = v.lang; } else u.lang = lang === 'es' ? 'es-US' : 'en-US';
     u.rate = slow ? Math.max(0.6, prefs.rate - 0.2) : prefs.rate;
     u.onstart = () => {
       setState('speaking'); mouth.start();
@@ -435,7 +473,7 @@ ${facts}`;
     if (listening || state === 'thinking' || busy) return;
     speechSynthesis?.cancel();
     rec = new SR();
-    rec.lang = 'en-US';
+    rec.lang = prefs.lang === 'es' ? 'es-CO' : 'en-US';
     rec.interimResults = true;
     rec.continuous = false;
     finalText = '';
@@ -504,7 +542,7 @@ ${facts}`;
   }
 
   async function weatherInfo(text) {
-    const m = /\b(?:in|at|for)\s+([a-zà-ÿ][a-zà-ÿ .'-]*?)(?:\s+(?:today|tomorrow|now|right now|this week|please))?\s*[?.!]*$/i.exec(text);
+    const m = /\b(?:in|at|for|en)\s+([a-zà-ÿ][a-zà-ÿ .'-]*?)(?:\s+(?:today|tomorrow|now|right now|this week|please|hoy|ma[nñ]ana|ahora|por favor))?\s*[?.!]*$/i.exec(text);
     const city = m?.[1]?.trim() || prefs.lastCity;
     if (!city) return { note: 'The learner did not say which city. Ask politely which city they mean.', source: null };
     const geo = await getJSON(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=en`);
@@ -522,11 +560,11 @@ ${facts}`;
     };
   }
 
-  async function wikiInfo(subject) {
-    const q = await getJSON(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(subject)}&srlimit=1&format=json&origin=*`);
+  async function wikiInfo(subject, wiki = 'en') {
+    const q = await getJSON(`https://${wiki}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(subject)}&srlimit=1&format=json&origin=*`);
     const title = q.query?.search?.[0]?.title;
     if (!title) return { note: `Nothing was found about "${subject}". Say politely that you could not find information about it.`, source: null };
-    const sum = await getJSON(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`);
+    const sum = await getJSON(`https://${wiki}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`);
     const extract = (sum.extract || '').split(/(?<=\.)\s+/).slice(0, 3).join(' ').slice(0, 500);
     return { note: `From Wikipedia, "${title}": ${extract}`, source: 'Wikipedia' };
   }
@@ -534,78 +572,35 @@ ${facts}`;
   async function lookupOnline(text) {
     const t = text.toLowerCase().trim();
     // El modelo pequeño a veces confunde su nombre con el tuyo: se lo recordamos.
-    if (/\b(what('s| is) your name|who are you|your name)\b/.test(t)) {
+    if (/\b(what('s| is) your name|who are you|your name)\b|c[oó]mo te llamas|cu[aá]l es tu nombre|qui[eé]n eres/.test(t)) {
       return { note: 'Your name is Mia. You are their friend. Say your name is Mia.', source: null };
     }
-    if (/\b(what|which)\b.*\b(day|date|time|year|month)\b|\btoday'?s date\b|\bwhat time\b/.test(t) && !/\bweather\b/.test(t)) {
+    if ((/\b(what|which)\b.*\b(day|date|time|year|month)\b|\btoday'?s date\b|\bwhat time\b/.test(t) ||
+         /\bqu[eé] (d[ií]a|fecha|hora|a[nñ]o|mes)\b|\ben qu[eé] (d[ií]a|fecha|a[nñ]o|mes)\b/.test(t)) && !/\b(weather|clima)\b/.test(t)) {
       return dateTimeInfo();
     }
-    const asks = /\b(what|what's|how|how's|is it|will it|is going to|tell me|do you know|check)\b/.test(t);
-    if (asks && (/\b(weather|temperature|forecast)\b/.test(t) || /\b(is it|will it|is going to)\b.*\b(rain|raining|sunny|cold|hot|snow|snowing)\b/.test(t))) {
+    const asks = /\b(what|what's|how|how's|is it|will it|is going to|tell me|do you know|check)\b/.test(t) ||
+      /\b(qu[eé]|c[oó]mo|va a|est[aá]|dime|sabes|hace)\b/.test(t);
+    if (asks && (/\b(weather|temperature|forecast)\b/.test(t) || /\b(is it|will it|is going to)\b.*\b(rain|raining|sunny|cold|hot|snow|snowing)\b/.test(t) ||
+        /\b(clima|temperatura|pron[oó]stico|llover|lloviendo|lluvia)\b|\btiempo hace\b/.test(t))) {
       return weatherInfo(text);
     }
     const m = /^(?:hey mia,?\s*|mia,?\s*)?(?:who (?:is|was|were|are)|what (?:is|was|are|were)(?: an?| the)?|tell me (?:something )?about|do you know (?:who|what)? ?(?:is|was)?)\s+(.+?)[?.!]*$/i.exec(text.trim());
     const subject = m?.[1]?.trim();
     if (subject && subject.length > 2 && !/^(you|your|my|me|i|it|this|that|there|here|today|happening|up|wrong|new|going on|the (time|date|day|weather))\b/i.test(subject)) {
-      return wikiInfo(subject);
+      return wikiInfo(subject, 'en');
+    }
+    const es = /^(?:mia,?\s*)?(?:qui[eé]n (?:es|fue|era)|qu[eé] (?:es|era) (?:el |la |un |una )?|h[aá]blame (?:de|sobre)|cu[eé]ntame (?:de|sobre)|sabes qui[eé]n (?:es|fue))\s+(.+?)[?.!]*$/i.exec(text.trim().replace(/^¿/, ''));
+    const sujeto = es?.[1]?.trim();
+    if (sujeto && sujeto.length > 2 && !/^(t[uú]|tu|mi|eso|esto|hoy|el (clima|d[ií]a)|la (hora|fecha))\b/i.test(sujeto)) {
+      return wikiInfo(sujeto, 'es');
     }
     return null;
   }
 
-  // ---------- Editar lo que dijiste ----------
-  function addEditButton(wrap) {
-    chatEl.querySelectorAll('.edit-btn').forEach(b => b.remove()); // solo la última frase se puede editar
-    const btn = el('button', 'edit-btn', '✎ No dije eso');
-    btn.type = 'button';
-    btn.title = 'Corregir lo que Mia entendió';
-    btn.addEventListener('click', () => startEdit(wrap));
-    wrap.querySelector('.bubble').after(btn);
-  }
-
-  function startEdit(wrap) {
-    if (busy || !lastTurn || lastTurn.wrap !== wrap) return;
-    speechSynthesis?.cancel();
-    const form = el('form', 'edit-form');
-    const input = el('input');
-    input.type = 'text'; input.id = 'editInput'; input.value = lastTurn.text; input.autocomplete = 'off';
-    input.setAttribute('aria-label', 'Lo que querías decir');
-    const ok = el('button', 'send', 'Enviar'); ok.type = 'submit';
-    const cancel = el('button', 'say', 'Cancelar'); cancel.type = 'button';
-    form.append(input, ok, cancel);
-    const bubble = wrap.querySelector('.bubble'), btn = wrap.querySelector('.edit-btn');
-    bubble.hidden = true; if (btn) btn.hidden = true;
-    bubble.after(form);
-    input.focus(); input.select();
-    cancel.addEventListener('click', () => { form.remove(); bubble.hidden = false; if (btn) btn.hidden = false; });
-    form.addEventListener('submit', e => {
-      e.preventDefault();
-      const meant = input.value.trim();
-      if (!meant || meant === lastTurn.text) { cancel.click(); return; }
-      redoTurn(meant);
-    });
-  }
-
-  // Deshace el último turno (tu frase, la respuesta de Mia y lo que se guardó) y lo repite con la frase corregida.
-  function redoTurn(meant) {
-    const t = lastTurn;
-    lastTurn = null;
-    speechSynthesis?.cancel(); mouth.stop();
-    memory = Object.assign(emptyMemory(), JSON.parse(t.before.memory));
-    saveMemory(); renderMemory();
-    // La conversación de la IA no se recorta (eso la obliga a releer todo, ~40 s):
-    // se le avisa que el micrófono entendió mal y responde a la frase corregida.
-    while (t.wrap.nextSibling) t.wrap.nextSibling.remove();
-    t.wrap.remove();
-    lastMia = [...chatEl.querySelectorAll('.msg.mia .bubble')].pop()?.textContent || '';
-    log(`Frase editada: "${t.text.slice(0, 50)}" → "${meant.slice(0, 50)}"`);
-    timing.lastWord = 0;
-    send(meant, { redo: true });
-  }
-
   // ---------- Conversación ----------
   let busy = false;
-  let lastTurn = null; // tu último mensaje, para poder editarlo
-  async function send(text, { greet = false, redo = false } = {}) {
+  async function send(text, { greet = false } = {}) {
     if (busy) {
       log('Mensaje ignorado: la IA sigue ocupada');
       addError('Mia todavía está pensando la respuesta anterior. Espera un momento.');
@@ -613,10 +608,9 @@ ${facts}`;
     }
     busy = true;
     document.body.dataset.busy = '1';
+    if (!greet) { const l = detectLang(text); if (l) setLang(l); }
     setState('thinking');
     const mine = greet ? null : addMe(text);
-    // Foto del estado antes de este turno: si editas la frase, se vuelve a este punto.
-    const before = greet ? null : { memory: JSON.stringify(memory), sessionLen: chatSession ? chatSession.msgs.length : null };
     const typing = addTyping();
     timing.sent = performance.now();
     if (greet) timing.lastWord = 0;
@@ -624,7 +618,7 @@ ${facts}`;
     const userMsg = {
       role: 'user',
       content: greet
-        ? `(Your friend just opened the app. Greet them like a friend who is happy to see them, in one short sentence${memory.facts.length ? ' that mentions something you remember about them' : ' and ask for their name'}, then ask one simple question to start chatting.)`
+        ? `(Your friend just opened the app. In ${LANG_NAMES[prefs.lang]}, greet them like a friend who is happy to see them, in one short sentence${memory.facts.length ? ' that mentions something you remember about them' : ' and ask for their name'}, then ask one simple question to start chatting.)`
         : text,
     };
     // ¿Necesita información de internet? Se agrega como nota para Mia.
@@ -639,7 +633,8 @@ ${facts}`;
         online = { note: 'You tried to check the internet but it did not work. Say politely that you could not check it right now.', source: null };
       }
       if (online) userMsg.content += `\n\n[Note for Mia: ${online.note}]`;
-      if (redo) userMsg.content += '\n\n[Note for Mia: the microphone misheard the previous message. This is what your friend really said. Forget the previous message and reply to this one.]';
+      // El modelo pequeño a veces responde en inglés a un mensaje en español: se le indica en cada turno.
+      userMsg.content += `\n\n[Note for Mia: reply in ${LANG_NAMES[detectLang(text) || prefs.lang]}.]`;
     }
     messages.push(userMsg);
 
@@ -682,10 +677,6 @@ ${facts}`;
       recordFacts(r.new_memories);
       saveMemory();
       renderMemory();
-      if (mine && before) {
-        lastTurn = { text, wrap: mine, before };
-        addEditButton(mine);
-      }
       setTimeout(summarizeOld, 4000);
     } catch (e) {
       typing.remove();
@@ -755,6 +746,7 @@ ${facts}`;
     else startListening();
   });
   $('replayBtn').addEventListener('click', () => lastMia && speak(lastMia));
+  $('langBtn').addEventListener('click', () => setLang(prefs.lang === 'es' ? 'en' : 'es'));
   $('keyboardBtn').addEventListener('click', () => {
     const tb = $('typebar'); tb.hidden = !tb.hidden;
     if (!tb.hidden) $('textInput').focus();
@@ -819,6 +811,7 @@ ${facts}`;
     $('rateRange').value = prefs.rate;
     $('rateVal').textContent = Number(prefs.rate).toFixed(2) + '×';
     $('handsFree').checked = prefs.handsFree;
+    $('langBtn').textContent = prefs.lang.toUpperCase();
   }
   $('modelSel').addEventListener('change', async e => {
     prefs.model = e.target.value; savePrefs();
@@ -829,6 +822,7 @@ ${facts}`;
     setState('idle');
   });
   $('voiceSel').addEventListener('change', e => { prefs.voice = e.target.value; savePrefs(); speak('Hi! This is my new voice.'); });
+  $('voiceEsSel').addEventListener('change', e => { prefs.voiceEs = e.target.value; savePrefs(); speak('¡Hola! Esta es mi nueva voz.'); });
   $('rateRange').addEventListener('input', e => { prefs.rate = Number(e.target.value); savePrefs(); applyPrefsToUI(); });
   $('rateRange').addEventListener('change', () => speak('How does this speed sound to you?'));
   $('handsFree').addEventListener('change', e => { prefs.handsFree = e.target.checked; savePrefs(); });

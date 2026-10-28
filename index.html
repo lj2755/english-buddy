@@ -41,7 +41,7 @@
   <div class="interim" id="interim" hidden></div>
 
   <form class="typebar" id="typebar" hidden>
-    <input id="textInput" type="text" placeholder="Escribe en inglés…" autocomplete="off" enterkeyhint="send">
+    <input id="textInput" type="text" placeholder="Escribe en inglés o en español…" autocomplete="off" enterkeyhint="send">
     <button class="send" type="submit">Enviar</button>
   </form>
 
@@ -53,6 +53,7 @@
       <span class="ring"></span>
       <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true"><path fill="currentColor" d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 0 0-7 0v6A3.5 3.5 0 0 0 12 15Zm6.5-3.5a1 1 0 1 0-2 0 4.5 4.5 0 0 1-9 0 1 1 0 1 0-2 0 6.5 6.5 0 0 0 5.5 6.42V20H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-2.08a6.5 6.5 0 0 0 5.5-6.42Z"/></svg>
     </button>
+    <button class="icon-btn lang-btn" id="langBtn" type="button" aria-label="El micrófono escucha en inglés. Cambiar a español">EN</button>
     <button class="icon-btn" id="replayBtn" type="button" aria-label="Repetir lo último que dijo Mia">
       <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M12 5V2L7 6l5 4V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8Z"/></svg>
     </button>
@@ -63,7 +64,7 @@
 <div class="splash" id="splash">
   <div class="splash-card">
     <h1>English Buddy</h1>
-    <p>Conversa en inglés con Mia, tu amiga. Ella te escucha, te responde en voz alta y recuerda lo que le cuentas. La IA funciona dentro de tu dispositivo.</p>
+    <p>Conversa en inglés o en español con Mia, tu amiga. Ella te escucha, te responde en voz alta y recuerda lo que le cuentas. La IA funciona dentro de tu dispositivo.</p>
     <p class="model-line" id="modelLine">Revisando la GPU del celular…</p>
     <div class="progress" id="progress" hidden>
       <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
@@ -86,8 +87,12 @@
       <select id="modelSel"></select>
     </div>
     <div class="field">
-      <label for="voiceSel">Voz de Mia</label>
+      <label for="voiceSel">Voz de Mia en inglés</label>
       <select id="voiceSel"></select>
+    </div>
+    <div class="field">
+      <label for="voiceEsSel">Voz de Mia en español</label>
+      <select id="voiceEsSel"></select>
     </div>
     <div class="field">
       <label for="rateRange">Velocidad <span id="rateVal">1.0×</span></label>

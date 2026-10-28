@@ -1,6 +1,6 @@
 # English Buddy
 
-Conversa en inglés con **Mia**, una amiga virtual. Te escucha, te responde en voz alta y recuerda lo que le cuentas.
+Conversa en inglés o en español con **Mia**, una amiga virtual. Te escucha, te responde en voz alta y recuerda lo que le cuentas.
 
 **La IA corre dentro de tu celular o tu PC** con [WebLLM](https://github.com/mlc-ai/web-llm) (WebGPU) y el modelo pequeño **Gemma 4 E2B**: no hay servidor, ni cuentas, ni costos por uso. La memoria se guarda en tu dispositivo.
 
@@ -31,9 +31,9 @@ Escanea el código con la cámara del celular:
 ## Funciones
 
 - Conversación por voz: micrófono, voz de Mia con velocidad ajustable y modo manos libres.
-- **✎ No dije eso:** si el micrófono entendió mal tu última frase, la corriges y Mia responde de nuevo.
+- **Inglés o español:** Mia responde en el idioma en que le hablas, con una voz para cada idioma. El botón **EN/ES** junto al micrófono elige en qué idioma escucha (Chrome no lo detecta solo en la voz); si le escribes en el otro idioma, el micrófono cambia solo.
 - Memoria: lo que le cuentas sobre ti. Puedes verlo, borrarlo y guardar una copia en un archivo.
-- Información actual: fecha y hora (de tu dispositivo), clima ([Open-Meteo](https://open-meteo.com)) y datos generales ([Wikipedia](https://en.wikipedia.org)). Pregunta, por ejemplo, *"What's the weather in Bogotá?"* o *"Who was Gabriel García Márquez?"*. Debajo de la respuesta aparece la fuente.
+- Información actual: fecha y hora (de tu dispositivo), clima ([Open-Meteo](https://open-meteo.com)) y datos generales ([Wikipedia](https://en.wikipedia.org)). Pregunta, por ejemplo, *"What's the weather in Bogotá?"* o *"¿Quién fue Gabriel García Márquez?"*. Debajo de la respuesta aparece la fuente.
 
 ## Archivos
 
