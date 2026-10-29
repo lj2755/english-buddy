@@ -85,6 +85,14 @@
       <button class="icon-btn" id="closeSettings" type="button" aria-label="Cerrar">✕</button>
     </div>
     <div class="field">
+      <label for="engineSel">Motor de IA</label>
+      <select id="engineSel">
+        <option value="auto">Automático · GPU si funciona bien, si no el procesador</option>
+        <option value="gpu">GPU · más rápido</option>
+        <option value="cpu">Procesador · funciona en casi cualquier celular</option>
+      </select>
+    </div>
+    <div class="field" id="modelField">
       <label for="modelSel">Modelo de IA</label>
       <select id="modelSel"></select>
     </div>

@@ -3,7 +3,7 @@
 import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+esm';
 
 (() => {
-  const APP_VERSION = '29'; // súbelo junto con CACHE en sw.js en cada cambio
+  const APP_VERSION = '31'; // súbelo junto con CACHE en sw.js en cada cambio
   const $ = id => document.getElementById(id);
   const chatEl = $('chat');
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -128,6 +128,80 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
     finally { loading = null; }
   }
 
+  // ---------- Motor en el procesador (wllama: llama.cpp compilado para el navegador) ----------
+  // Para los dispositivos donde la GPU no sirve (sin WebGPU, o que calcula mal, como algunas Adreno
+  // con Chrome 156). Funciona en casi cualquier celular, aunque más lento que la GPU.
+  const WLLAMA_URL = 'https://cdn.jsdelivr.net/npm/@wllama/wllama@3.8.1/esm/index.js';
+  const WLLAMA_WASM = 'https://cdn.jsdelivr.net/npm/@wllama/wllama@3.8.1/src/wasm/wllama.wasm';
+  // Qwen2.5 1.5B fue el que mejor conversó en el procesador en las pruebas (inglés y español).
+  const CPU_MODEL = { repo: 'Qwen/Qwen2.5-1.5B-Instruct-GGUF', file: 'qwen2.5-1.5b-instruct-q4_k_m.gguf' };
+  const CHROME_MAJOR = navigator.userAgent.match(/Chrome\/(\d+)/)?.[1] || '?';
+  let useCPU = false, cpu = null, cpuLoading = null;
+
+  async function ensureCPU() {
+    if (cpu) return cpu;
+    cpuLoading ??= (async () => {
+      const { Wllama } = await import(WLLAMA_URL);
+      const quiet = { debug() {}, log() {}, warn: m => console.warn(m), error: m => log('wllama: ' + m) };
+      const w = new Wllama({ default: WLLAMA_WASM }, { logger: quiet });
+      const t0 = Date.now();
+      log(`Cargando ${CPU_MODEL.file} en el procesador (${crossOriginIsolated ? navigator.hardwareConcurrency + ' núcleos' : 'un solo núcleo: falta aislamiento'})`);
+      await w.loadModelFromHF(CPU_MODEL, {
+        n_ctx: 4096, n_gpu_layers: 0,
+        progressCallback: ({ loaded, total }) => showProgress(total ? loaded / total : 0,
+          `Preparando a Mia para el procesador (la primera vez descarga ~1.1 GB)… ${total ? Math.round(loaded / total * 100) : 0}%`),
+      });
+      log(`Modelo listo en el procesador en ${Math.round((Date.now() - t0) / 1000)} s`);
+      $('progress').hidden = true;
+      cpu = w;
+      return w;
+    })();
+    try { return await cpuLoading; } catch (e) { cpuLoading = null; log('No cargó la IA en el procesador: ' + errText(e)); throw e; }
+  }
+
+  async function generateCPU(messages, { format, onChunk }) {
+    const w = await ensureCPU();
+    const ctrl = new AbortController();
+    const req = { messages, stream: true, max_tokens: 300, temperature: 0.6, cache_prompt: true, abortSignal: ctrl.signal };
+    if (format) req.response_format = { type: 'json_schema', json_schema: { name: 'respuesta', schema: format } };
+    let text = '', first = 0, tokens = 0, finish = '';
+    const t0 = Date.now();
+    log(`Pregunta enviada al procesador (${messages.length} mensajes)`);
+    const watchdog = setTimeout(() => ctrl.abort(), 180000);
+    try {
+      for await (const chunk of await w.createChatCompletion(req)) {
+        if (chunk.choices?.[0]?.finish_reason) finish = chunk.choices[0].finish_reason;
+        const d = chunk.choices?.[0]?.delta?.content;
+        if (d) {
+          if (!first) { first = Date.now() - t0; log(`Primera palabra a los ${(first / 1000).toFixed(1)} s`); }
+          tokens++;
+          text += d; onChunk?.(text);
+        }
+      }
+    } catch (e) {
+      if (ctrl.signal.aborted && !text) throw new Error('La IA tardó demasiado en responder.');
+      if (!ctrl.signal.aborted) throw e;
+    } finally { clearTimeout(watchdog); }
+    const secs = (Date.now() - t0 - first) / 1000;
+    log(`Respuesta completa: ${tokens} piezas en ${((Date.now() - t0) / 1000).toFixed(1)} s · ${secs > 0 ? (tokens / secs).toFixed(1) : '?'} por segundo · fin: ${finish || '?'}`);
+    lastRaw = text;
+    return text.trim();
+  }
+
+  // La GPU de este dispositivo no sirve: se pasa al procesador y se recuerda (hasta que cambie Chrome).
+  async function switchToCPU(reason) {
+    if (useCPU) return;
+    log('Paso al procesador: ' + reason);
+    useCPU = true;
+    prefs.gpuBroken = CHROME_MAJOR; savePrefs();
+    try { await engine?.unload(); } catch {}
+    engineWorker?.terminate();
+    engine = null; engineWorker = null; loadedId = null;
+    resetSession();
+    if (stt) { stt.worker.terminate(); stt = null; } // Whisper también usaba la GPU
+    applyPrefsToUI();
+  }
+
   // Describe cualquier error, aunque no traiga mensaje (los del worker a veces llegan vacíos).
   function errText(e) {
     if (e === undefined || e === null) return 'error desconocido (la librería no dio detalles)';
@@ -196,12 +270,16 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
     const run = async () => {
       for (let attempt = 0; ; attempt++) {
         try {
-          return await generate(messages, opts);
+          return await (useCPU ? generateCPU(messages, opts) : generate(messages, opts));
         } catch (e) {
-          if (attempt >= 4) throw new Error('La IA del celular no logró responder. Prueba otro modelo en Ajustes → Modelo de IA (por ejemplo Qwen3.5 2B).');
           log('Falló la generación: ' + errText(e) + (e?.stack ? ' | ' + String(e.stack).split('\n')[1]?.trim() : ''));
-          if (/tardó demasiado/.test(e?.message || '')) throw e;
           const msg = errText(e);
+          if (useCPU) {
+            if (attempt >= 1 || /tardó demasiado/.test(msg)) throw new Error('La IA no logró responder (' + msg + ').');
+            continue; // un reintento
+          }
+          if (attempt >= 4) { await switchToCPU('la GPU no logró responder: ' + msg); continue; }
+          if (/tardó demasiado/.test(msg)) throw e;
           // Conversación demasiado larga para el modelo: se recortan los mensajes viejos.
           if (/context window|prompt tokens/i.test(msg) && messages.length > 3) {
             messages = [messages[0], ...messages.slice(-3)];
@@ -213,6 +291,11 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
           if (f16 && /sin sentido|Grammar matcher|NaN/i.test(msg)) {
             prefs.forceF32 = true; f16 = false; savePrefs();
             log('Los números f16 de esta GPU fallan: cambio al modelo sin f16');
+            continue;
+          }
+          // Texto sin sentido o la GPU se cae: la GPU de este dispositivo calcula mal.
+          if (/sin sentido|Grammar matcher|NaN|Instance reference|device (was )?lost|mapAsync/i.test(msg)) {
+            await switchToCPU('la GPU calcula mal (' + msg + ')');
             continue;
           }
           if (/memory|out of|device (was )?lost|allocation/i.test(msg) && prefs.model !== 'Qwen3.5-2B') {
@@ -239,7 +322,7 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
             log('Reintentando con el modelo sin f16 (puede descargar el modelo otra vez)');
             continue;
           }
-          throw new Error('La IA del celular no logró responder (' + msg + '). Prueba otro modelo en Ajustes → Modelo de IA.');
+          await switchToCPU('la GPU no logró responder: ' + msg);
         }
       }
     };
@@ -303,10 +386,11 @@ ${facts}`;
   // El modelo a veces se presenta con su nombre de fábrica (Mia siempre es Mia) o copia en su
   // respuesta las notas internas de la app: esas notas nunca se muestran ni se leen.
   const asMia = t => String(t || '')
-    .replace(/\[Note for Mia[^\]]*\]?/gi, '')
+    .replace(/\[(Note for Mia|Nota para Mia)[^\]]*\]?/gi, '')
     .replace(/\b(according to|as per|based on) (the|my|your|this) (note|information)[,.]?\s*/gi, '')
     .replace(/\b(seg[uú]n|de acuerdo (con|a)) la (nota|informaci[oó]n)[,.]?\s*/gi, '')
     .replace(/\b(?:Gemma|Qwen)(?:[\s-]*[\d.]+[a-z]?)*(?:[\s-]*(?:E2B|it))?\b/gi, 'Mia')
+    .replace(/\b(you|t[uú]|ti),\s*Mia\b/gi, '$1') // a veces llama "Mia" a su amigo
     .replace(/\s+([,.!?])/g, '$1').replace(/,\s*,/g, ',').replace(/\s{2,}/g, ' ').trim();
 
   function parseResult(text) {
@@ -321,10 +405,16 @@ ${facts}`;
     return r;
   }
 
-  function recordFacts(list) {
+  // Los modelos pequeños a veces inventan recuerdos: solo se guardan los que comparten alguna
+  // palabra importante con lo que dijiste.
+  const keyWords = t => new Set((String(t).toLowerCase().match(/[a-záéíóúñü]{4,}/g) || [])
+    .filter(w => !/^(that|this|with|have|from|they|their|there|what|your|about|would|like|some|está|estoy|para|pero|como|tengo|muy|también)$/.test(w)));
+  function recordFacts(list, saidText) {
+    const said = keyWords(saidText);
     for (const f of list) {
       const t = String(f).trim();
       if (/[()]|to be filled|unknown|not (yet )?(provided|mentioned)/i.test(t)) continue;
+      if (![...keyWords(t)].some(w => said.has(w))) { log('Recuerdo descartado (no sale de lo que dijiste): ' + t.slice(0, 60)); continue; }
       if (t && !memory.facts.some(x => x.toLowerCase() === t.toLowerCase())) memory.facts.push(t);
     }
     if (memory.facts.length > 60) memory.facts = memory.facts.slice(-60);
@@ -565,7 +655,9 @@ ${facts}`;
         }
       });
     });
-    worker.postMessage({ type: 'load', device: 'webgpu', model: 'onnx-community/whisper-small', encoder: 'q4' });
+    worker.postMessage(useCPU
+      ? { type: 'load', device: 'wasm', model: 'onnx-community/whisper-base', encoder: 'q8' } // más liviano para el procesador
+      : { type: 'load', device: 'webgpu', model: 'onnx-community/whisper-small', encoder: 'q4' });
     stt = { worker, ready };
     ready.catch(e => {
       log('Whisper no pudo cargar: ' + e.message);
@@ -696,24 +788,39 @@ ${facts}`;
     } finally { clearTimeout(t); }
   }
 
-  function dateTimeInfo() {
-    const now = new Date();
-    const date = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-    const time = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-    return { note: `Today is ${date}. The time is ${time}.`, source: 'tu dispositivo' };
+  function dateTimeInfo(lang) {
+    const now = new Date(), loc = lang === 'es' ? 'es-CO' : 'en-US';
+    const date = now.toLocaleDateString(loc, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const time = now.toLocaleTimeString(loc, { hour: 'numeric', minute: '2-digit' });
+    return { note: lang === 'es' ? `Hoy es ${date}. Son las ${time}.` : `Today is ${date}. The time is ${time}.`, source: 'tu dispositivo' };
   }
 
-  async function weatherInfo(text) {
+  const WEATHER_ES = {
+    0: 'despejado', 1: 'casi despejado', 2: 'parcialmente nublado', 3: 'nublado', 45: 'con niebla', 48: 'con niebla',
+    51: 'con llovizna ligera', 53: 'con llovizna', 55: 'con llovizna fuerte', 61: 'con lluvia ligera', 63: 'con lluvia', 65: 'con lluvia fuerte',
+    66: 'con lluvia helada', 67: 'con lluvia helada', 71: 'con nieve ligera', 73: 'con nieve', 75: 'con nieve fuerte', 77: 'con nieve',
+    80: 'con chubascos', 81: 'con chubascos', 82: 'con chubascos fuertes', 85: 'con nevadas', 86: 'con nevadas',
+    95: 'con tormentas', 96: 'con tormentas y granizo', 99: 'con tormentas y granizo',
+  };
+  async function weatherInfo(text, lang) {
     const m = /\b(?:in|at|for|en)\s+([a-zà-ÿ][a-zà-ÿ .'-]*?)(?:\s+(?:today|tomorrow|now|right now|this week|please|hoy|ma[nñ]ana|ahora|por favor))?\s*[?.!]*$/i.exec(text);
     const city = m?.[1]?.trim() || prefs.lastCity;
-    if (!city) return { note: 'The learner did not say which city. Ask politely which city they mean.', source: null };
+    if (!city) return { note: lang === 'es' ? 'Tu amigo no dijo de qué ciudad. Pregúntale amablemente cuál.' : 'Your friend did not say which city. Ask kindly which city they mean.', source: null };
     const geo = await getJSON(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=en`);
     const place = geo.results?.[0];
-    if (!place) return { note: `No city called "${city}" was found. Ask the learner to repeat the city name.`, source: null };
+    if (!place) return { note: lang === 'es' ? `No se encontró la ciudad "${city}". Pídele que repita el nombre.` : `No city called "${city}" was found. Ask your friend to repeat the city name.`, source: null };
     prefs.lastCity = place.name; savePrefs();
     const w = await getJSON(`https://api.open-meteo.com/v1/forecast?latitude=${place.latitude}&longitude=${place.longitude}` +
       '&current=temperature_2m,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto&forecast_days=2');
     const c = w.current, d = w.daily;
+    if (lang === 'es') {
+      return {
+        note: `Clima en ${place.name}, ${place.country}: ahora ${Math.round(c.temperature_2m)} °C, ${WEATHER_ES[c.weather_code] || 'variable'}, viento de ${Math.round(c.wind_speed_10m)} km/h. ` +
+          `Hoy entre ${Math.round(d.temperature_2m_min[0])} y ${Math.round(d.temperature_2m_max[0])} °C. ` +
+          `Mañana ${WEATHER_ES[d.weather_code[1]] || 'variable'}, entre ${Math.round(d.temperature_2m_min[1])} y ${Math.round(d.temperature_2m_max[1])} °C.`,
+        source: 'Open-Meteo',
+      };
+    }
     return {
       note: `Weather in ${place.name}, ${place.country}: now ${Math.round(c.temperature_2m)} °C and ${WEATHER_WORDS[c.weather_code] || 'variable'}, wind ${Math.round(c.wind_speed_10m)} km/h. ` +
         `Today between ${Math.round(d.temperature_2m_min[0])} and ${Math.round(d.temperature_2m_max[0])} °C. ` +
@@ -733,19 +840,20 @@ ${facts}`;
 
   async function lookupOnline(text) {
     const t = text.toLowerCase().trim();
+    const lang = detectLang(text) || prefs.lang;
     // El modelo pequeño a veces confunde su nombre con el tuyo: se lo recordamos.
     if (/\b(what('s| is) your name|who are you|your name)\b|c[oó]mo te llamas|cu[aá]l es tu nombre|qui[eé]n eres/.test(t)) {
       return { note: 'Your name is Mia. You are their friend. Say your name is Mia.', source: null };
     }
     if ((/\b(what|which)\b.*\b(day|date|time|year|month)\b|\btoday'?s date\b|\bwhat time\b/.test(t) ||
          /\bqu[eé] (d[ií]a|fecha|hora|a[nñ]o|mes)\b|\ben qu[eé] (d[ií]a|fecha|a[nñ]o|mes)\b/.test(t)) && !/\b(weather|clima)\b/.test(t)) {
-      return dateTimeInfo();
+      return dateTimeInfo(lang);
     }
     const asks = /\b(what|what's|how|how's|is it|will it|is going to|tell me|do you know|check)\b/.test(t) ||
       /\b(qu[eé]|c[oó]mo|va a|est[aá]|dime|sabes|hace)\b/.test(t);
     if (asks && (/\b(weather|temperature|forecast)\b/.test(t) || /\b(is it|will it|is going to)\b.*\b(rain|raining|sunny|cold|hot|snow|snowing)\b/.test(t) ||
         /\b(clima|temperatura|pron[oó]stico|llover|lloviendo|lluvia)\b|\btiempo hace\b/.test(t))) {
-      return weatherInfo(text);
+      return weatherInfo(text, lang);
     }
     const m = /^(?:hey mia,?\s*|mia,?\s*)?(?:who (?:is|was|were|are)|what (?:is|was|are|were)(?: an?| the)?|tell me (?:something )?about|do you know (?:who|what)? ?(?:is|was)?)\s+(.+?)[?.!]*$/i.exec(text.trim());
     const subject = m?.[1]?.trim();
@@ -796,7 +904,10 @@ ${facts}`;
       }
       if (online) userMsg.content += `\n\n[Note for Mia: ${online.note}]`;
       // El modelo pequeño a veces responde en inglés a un mensaje en español: se le indica en cada turno.
-      userMsg.content += `\n\n[Note for Mia: reply in ${LANG_NAMES[detectLang(text) || prefs.lang]}.]`;
+      // Escrita en el idioma de la respuesta: a los modelos pequeños les ayuda a no cambiar de idioma.
+      userMsg.content += (detectLang(text) || prefs.lang) === 'es'
+        ? '\n\n[Nota para Mia: responde en español, como Mia, una persona real con sus propios gustos y opiniones. Tu amigo no es Mia.]'
+        : '\n\n[Note for Mia: reply in English, as Mia, a real person with your own tastes and opinions. Your friend is not Mia.]';
     }
     messages.push(userMsg);
 
@@ -836,7 +947,7 @@ ${facts}`;
       const now = new Date().toISOString();
       if (!greet) memory.messages.push({ role: 'user', text, at: now });
       memory.messages.push({ role: 'assistant', text: r.reply, at: now });
-      recordFacts(r.new_memories);
+      if (!greet) recordFacts(r.new_memories, text);
       saveMemory();
       renderMemory();
       setTimeout(summarizeOld, 4000);
@@ -871,15 +982,16 @@ ${facts}`;
     for (const m of MODELS) { const o = el('option', '', m.label); o.value = m.base; sel.append(o); }
     if (!MODELS.some(m => m.base === prefs.model)) prefs.model = DEFAULT_MODEL;
     sel.value = prefs.model;
-    const adapter = await navigator.gpu?.requestAdapter().catch(() => null);
-    if (!adapter) {
-      const desktop = !/Android|iPhone|iPad/i.test(navigator.userAgent);
-      line.textContent = desktop
-        ? 'Chrome no tiene WebGPU activado en esta PC. Abre chrome://flags, activa "Unsafe WebGPU Support" y "Override software rendering list" (no actives Vulkan), y toca "Relaunch".'
-        : 'Este navegador no tiene WebGPU. Usa Google Chrome actualizado en Android.';
-      log('Sin WebGPU: ' + navigator.userAgent);
-      $('startBtn').disabled = true;
-      return false;
+    const adapter = prefs.engine === 'cpu' ? null : await navigator.gpu?.requestAdapter().catch(() => null);
+    const knownBroken = prefs.gpuBroken === CHROME_MAJOR && prefs.engine !== 'gpu';
+    if (!adapter || knownBroken) {
+      useCPU = true;
+      log(prefs.engine === 'cpu' ? 'Motor elegido: procesador'
+        : knownBroken ? `La GPU de este dispositivo calculó mal con Chrome ${CHROME_MAJOR}: uso el procesador`
+        : 'Sin WebGPU: uso el procesador · ' + navigator.userAgent);
+      line.textContent = 'Mia usará el procesador de este dispositivo. La primera vez descarga unos 1.1 GB; conéctate a Wi-Fi.';
+      applyPrefsToUI();
+      return true;
     }
     // En GPU Qualcomm Adreno el modo f16 de WebLLM genera texto sin sentido: se usa f32.
     const adreno = /qualcomm|adreno/i.test(`${adapter.info?.vendor} ${adapter.info?.architecture}`);
@@ -977,6 +1089,8 @@ ${facts}`;
     $('langBtn').textContent = prefs.lang.toUpperCase();
     $('langBtn').hidden = prefs.stt === 'whisper'; // Whisper detecta el idioma solo
     $('sttSel').value = prefs.stt;
+    $('engineSel').value = prefs.engine || 'auto';
+    $('modelField').hidden = useCPU; // en el procesador hay un solo modelo
   }
   $('modelSel').addEventListener('change', async e => {
     prefs.model = e.target.value; savePrefs();
@@ -991,6 +1105,12 @@ ${facts}`;
   $('rateRange').addEventListener('input', e => { prefs.rate = Number(e.target.value); savePrefs(); applyPrefsToUI(); });
   $('rateRange').addEventListener('change', () => speak('How does this speed sound to you?'));
   $('handsFree').addEventListener('change', e => { prefs.handsFree = e.target.checked; savePrefs(); });
+  $('engineSel').addEventListener('change', e => {
+    prefs.engine = e.target.value;
+    if (prefs.engine === 'gpu') delete prefs.gpuBroken; // volver a intentar con la GPU
+    savePrefs();
+    location.reload();
+  });
   $('sttSel').addEventListener('change', e => {
     prefs.stt = e.target.value; savePrefs(); applyPrefsToUI();
     if (prefs.stt === 'whisper') sttWorker();
@@ -1085,7 +1205,11 @@ ${facts}`;
     mouth.unlock();
     $('startBtn').disabled = true;
     try {
-      await loadWithFallback();
+      if (useCPU) await ensureCPU();
+      else {
+        try { await loadWithFallback(); }
+        catch (gpuErr) { await switchToCPU('ningún modelo cargó en la GPU: ' + errText(gpuErr)); await ensureCPU(); }
+      }
     } catch (err) {
       $('progress').hidden = true;
       $('startBtn').disabled = false;
@@ -1099,10 +1223,11 @@ ${facts}`;
     }
     $('splash').hidden = true;
     log('App lista');
-    if (prefs.stt === 'whisper') sttWorker();
     const last = memory.messages[memory.messages.length - 1];
     const stale = !last || Date.now() - new Date(last.at).getTime() > 3 * 3600e3;
-    if (stale) send('', { greet: true });
+    if (stale) await send('', { greet: true });
+    // Whisper se prepara después del saludo, para no competir con la IA por el procesador.
+    if (prefs.stt === 'whisper') sttWorker();
   });
 
   applyPrefsToUI();
@@ -1110,7 +1235,18 @@ ${facts}`;
   renderMemory();
   checkGPU();
   // Busca versiones nuevas cada vez que se abre la app (sin la copia temporal del navegador).
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => {});
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => {});
+    // La primera vez la página no viene aislada (el service worker aún no la controlaba): se recarga
+    // una sola vez para que la IA en el procesador pueda usar todos los núcleos.
+    const reloadForIsolation = () => {
+      if (crossOriginIsolated || sessionStorage.getItem('eb-coi-reload')) return;
+      sessionStorage.setItem('eb-coi-reload', '1');
+      location.reload();
+    };
+    if (navigator.serviceWorker.controller) reloadForIsolation();
+    else navigator.serviceWorker.addEventListener('controllerchange', reloadForIsolation);
+  }
   $('appVersion').textContent = 'versión ' + APP_VERSION;
   log('English Buddy versión ' + APP_VERSION);
 })();

@@ -2,7 +2,10 @@
 
 Conversa en inglés o en español con **Mia**, una amiga virtual. Te escucha, te responde en voz alta y recuerda lo que le cuentas.
 
-**La IA corre dentro de tu celular o tu PC** con [WebLLM](https://github.com/mlc-ai/web-llm) (WebGPU) y el modelo pequeño **Gemma 4 E2B**: no hay servidor, ni cuentas, ni costos por uso. La memoria se guarda en tu dispositivo.
+**La IA corre dentro de tu celular o tu PC**: no hay servidor, ni cuentas, ni costos por uso. La memoria se guarda en tu dispositivo.
+
+- **Con GPU** ([WebLLM](https://github.com/mlc-ai/web-llm), WebGPU): Gemma 4 E2B, y si no cabe, modelos más livianos (Qwen3.5 2B, Llama 3.2 1B).
+- **En el procesador** ([wllama](https://github.com/ngxson/wllama), llama.cpp): Qwen2.5 1.5B. Se usa sola cuando el dispositivo no tiene WebGPU o su GPU calcula mal (pasa con algunas GPU Adreno y Chrome 156). Es más lenta, pero funciona en casi cualquier celular. Se puede elegir en **Ajustes → Motor de IA**.
 
 Mia es cálida y curiosa, y conversa como una amiga. Si no entiende lo que dices, te pide que lo repitas.
 
