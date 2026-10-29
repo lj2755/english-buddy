@@ -3,7 +3,7 @@
 import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+esm';
 
 (() => {
-  const APP_VERSION = '27'; // súbelo junto con CACHE en sw.js en cada cambio
+  const APP_VERSION = '28'; // súbelo junto con CACHE en sw.js en cada cambio
   const $ = id => document.getElementById(id);
   const chatEl = $('chat');
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -13,10 +13,15 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
     { base: 'Qwen3-4B', label: 'Qwen3 4B · más rápido' },
     { base: 'Qwen3.5-4B', label: 'Qwen3.5 4B · más nuevo' },
     { base: 'Qwen3.5-2B', label: 'Qwen3.5 2B · más rápido' },
-    { base: 'Qwen3-1.7B', label: 'Qwen3 1.7B · el más liviano' },
+    { base: 'Qwen3-1.7B', label: 'Qwen3 1.7B · liviano' },
+    { base: 'Llama-3.2-1B-Instruct', label: 'Llama 3.2 1B · para celulares con poca memoria' },
   ];
   // Gemma 4 E2B fue el que mejor conversó en las pruebas.
   const DEFAULT_MODEL = 'gemma-4-E2B-it';
+  // Si un modelo no carga en el dispositivo, se prueba el siguiente, más liviano (memoria de GPU:
+  // ~3.9 GB, ~2.6 GB y ~1.1 GB). Así la app funciona en la mayoría de los celulares con WebGPU.
+  const FALLBACK_MODELS = ['gemma-4-E2B-it', 'Qwen3.5-2B', 'Llama-3.2-1B-Instruct'];
+  const modelLabel = base => MODELS.find(m => m.base === base)?.label.split(' · ')[0] || base;
 
   // ---------- Almacenamiento ----------
   const load = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
@@ -70,7 +75,7 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
   };
 
   // ---------- Motor de IA (WebLLM en un Web Worker, para que el video no se trabe) ----------
-  let engine = null, loadedId = null, f16 = false, loading = null;
+  let engine = null, engineWorker = null, loadedId = null, f16 = false, loading = null;
   // En la PC, el doble de la memoria de trabajo por defecto (4096): la conversación dura ~35 turnos
   // sin reiniciarse. En el celular se deja la normal, porque la GPU comparte la memoria del teléfono.
   const MOBILE = /Android|iPhone|iPad/i.test(navigator.userAgent);
@@ -92,6 +97,8 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
     if (engine && loadedId === id) return engine;
     if (loading) return loading;
     loading = (async () => {
+      // Solo para pruebas: localStorage 'eb-test-fail' = ["modelo", ...] simula que ese modelo no carga.
+      if (load('eb-test-fail', []).includes(prefs.model)) throw new Error('fallo simulado para pruebas');
       const cached = await webllm.hasModelInCache(id).catch(() => false);
       const t0 = Date.now();
       log(`Cargando modelo ${id} (f16=${f16}, ${cached ? 'ya descargado' : 'descargando'})`);
@@ -101,8 +108,9 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
       if (!engine && session.noWorker) {
         engine = await webllm.CreateMLCEngine(id, { initProgressCallback: onProgress }, CHAT_OPTS);
       } else if (!engine) {
-        engine = await webllm.CreateWebWorkerMLCEngine(
-          new Worker(new URL('worker.js', import.meta.url), { type: 'module' }), id, { initProgressCallback: onProgress }, CHAT_OPTS);
+        engineWorker = new Worker(new URL('worker.js', import.meta.url), { type: 'module' });
+        engineWorker.addEventListener('error', e => log('Error en el proceso de la IA: ' + errText(e)));
+        engine = await webllm.CreateWebWorkerMLCEngine(engineWorker, id, { initProgressCallback: onProgress }, CHAT_OPTS);
       } else {
         engine.setInitProgressCallback(onProgress);
         await engine.reload(id, CHAT_OPTS);
@@ -119,8 +127,9 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
 
   // Describe cualquier error, aunque no traiga mensaje (los del worker a veces llegan vacíos).
   function errText(e) {
-    if (!e) return 'error desconocido';
+    if (e === undefined || e === null) return 'error desconocido (la librería no dio detalles)';
     if (typeof e === 'string') return e;
+    if (typeof ErrorEvent !== 'undefined' && e instanceof ErrorEvent) return `${e.message || 'error en el proceso de la IA'} (${e.filename || ''}:${e.lineno || ''})`;
     const parts = [e.name, e.message, e.code].filter(Boolean);
     if (parts.length) return parts.join(': ');
     try { return JSON.stringify(e) !== '{}' ? JSON.stringify(e) : String(e); } catch { return String(e); }
@@ -1035,20 +1044,45 @@ ${facts}`;
       else { addMia(m.text); lastMia = m.text; }
     }
   }
+  async function dropEngine() {
+    try { await engine?.unload(); } catch {}
+    engineWorker?.terminate();
+    engine = null; engineWorker = null; loadedId = null;
+  }
+
+  async function loadWithFallback() {
+    const start = FALLBACK_MODELS.indexOf(prefs.model);
+    const order = start >= 0 ? FALLBACK_MODELS.slice(start) : [prefs.model, ...FALLBACK_MODELS.slice(1)];
+    let lastErr;
+    for (let i = 0; i < order.length; i++) {
+      prefs.model = order[i];
+      $('modelSel').value = prefs.model;
+      for (const noWorker of [false, true]) { // algunos celulares fallan en el proceso aparte
+        session.noWorker = noWorker;
+        try {
+          await ensureEngine();
+          savePrefs();
+          return;
+        } catch (e) {
+          lastErr = e;
+          log(`No cargó ${order[i]} ${noWorker ? 'en la página' : 'en worker'}: ${errText(e)}`);
+          await dropEngine();
+        }
+      }
+      if (order[i + 1]) {
+        showProgress(0, `Este dispositivo no pudo cargar ${modelLabel(order[i])}. Probando ${modelLabel(order[i + 1])}, más liviano…`);
+        log(`Respaldo: paso de ${order[i]} a ${order[i + 1]}`);
+      }
+    }
+    throw lastErr;
+  }
+
   $('startBtn').addEventListener('click', async () => {
     if ('speechSynthesis' in window) speechSynthesis.speak(new SpeechSynthesisUtterance(''));
     mouth.unlock();
     $('startBtn').disabled = true;
     try {
-      try {
-        await ensureEngine();
-      } catch (first) {
-        // Segundo intento con la IA en la página (sin proceso aparte): algunos celulares fallan en el worker.
-        log('Reintento de carga en la página, sin worker');
-        try { await engine?.unload(); } catch {}
-        engine = null; loadedId = null; session.noWorker = true;
-        await ensureEngine();
-      }
+      await loadWithFallback();
     } catch (err) {
       $('progress').hidden = true;
       $('startBtn').disabled = false;

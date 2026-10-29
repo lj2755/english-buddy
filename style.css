@@ -44,7 +44,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 }
 
 /* ---------- Barra superior ---------- */
-.top { position: relative; z-index: 3; display: flex; align-items: center; gap: 10px; padding-block: 12px; }
+.top { position: relative; z-index: 11; /* por encima de la pantalla de inicio: Ajustes siempre a mano */ display: flex; align-items: center; gap: 10px; padding-block: 12px; }
 .who { display: flex; flex-direction: column; margin-right: auto; }
 .name { font: 700 26px/1 var(--font-display); letter-spacing: -.01em; }
 .status { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
