@@ -70,8 +70,11 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
 
   // ---------- Motor de IA (WebLLM en un Web Worker, para que el video no se trabe) ----------
   let engine = null, loadedId = null, f16 = false, loading = null;
-  // El doble de la memoria de trabajo por defecto (4096): la conversación dura ~35 turnos sin reiniciarse.
-  const CHAT_OPTS = { context_window_size: 8192 };
+  // En la PC, el doble de la memoria de trabajo por defecto (4096): la conversación dura ~35 turnos
+  // sin reiniciarse. En el celular se deja la normal, porque la GPU comparte la memoria del teléfono.
+  const MOBILE = /Android|iPhone|iPad/i.test(navigator.userAgent);
+  const CHAT_OPTS = MOBILE ? {} : { context_window_size: 8192 };
+  const MAX_SESSION_MSGS = MOBILE ? 30 : 70;
   // Respaldos de esta sesión (no se guardan: al abrir la app se vuelve a la configuración normal).
   const session = { noGrammar: false, noWorker: false };
   let queue = Promise.resolve(); // el motor atiende una petición a la vez
@@ -802,7 +805,7 @@ ${facts}`;
       const r = parseResult(raw);
       if (chatSession) {
         chatSession.msgs.push(userMsg, { role: 'assistant', content: lastRaw });
-        if (chatSession.msgs.length > 70) resetSession(); // conversación muy larga: se empieza de nuevo
+        if (chatSession.msgs.length > MAX_SESSION_MSGS) resetSession(); // conversación muy larga: se empieza de nuevo
       }
       if (!spokenEarly) {
         typing.remove();
@@ -950,6 +953,7 @@ ${facts}`;
   const dlg = $('settings');
   function openSettings() { renderMemory(); renderCachedModels(); dlg.showModal(); }
   $('settingsBtn').addEventListener('click', openSettings);
+  $('splashDiag').addEventListener('click', () => { openSettings(); $('diagLog').scrollIntoView(); });
   $('closeSettings').addEventListener('click', () => dlg.close());
   dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });
 
@@ -1035,14 +1039,24 @@ ${facts}`;
     mouth.unlock();
     $('startBtn').disabled = true;
     try {
-      await ensureEngine();
+      try {
+        await ensureEngine();
+      } catch (first) {
+        // Segundo intento con la IA en la página (sin proceso aparte): algunos celulares fallan en el worker.
+        log('Reintento de carga en la página, sin worker');
+        try { await engine?.unload(); } catch {}
+        engine = null; loadedId = null; session.noWorker = true;
+        await ensureEngine();
+      }
     } catch (err) {
       $('progress').hidden = true;
       $('startBtn').disabled = false;
+      const msg = errText(err);
       const w = $('splashWarn'); w.hidden = false;
-      w.textContent = /memory|device lost|out of/i.test(err.message)
-        ? 'El celular no tiene memoria suficiente para este modelo. Elige uno más liviano en Ajustes.'
-        : 'No se pudo cargar la IA: ' + err.message;
+      w.textContent = /memory|device lost|out of|allocat/i.test(msg)
+        ? `El celular no tiene memoria suficiente para este modelo (${msg}). Elige uno más liviano en Ajustes.`
+        : 'No se pudo cargar la IA: ' + msg;
+      $('splashDiag').hidden = false;
       return;
     }
     $('splash').hidden = true;
