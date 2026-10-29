@@ -1,7 +1,7 @@
 // Guarda la app en el celular para que abra rápido y sin internet.
 // Siempre pide primero la versión nueva (sin usar la copia temporal del navegador) y solo usa la
 // guardada si no hay conexión.
-const CACHE = 'eb-web-v28';
+const CACHE = 'eb-web-v29';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'worker.js', 'stt-worker.js', 'icon.png', 'mia.jpg', 'mia-idle.mp4', 'mia-talk.mp4', 'manifest.webmanifest'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL.map(u => new Request(u, { cache: 'reload' })))));

@@ -3,7 +3,7 @@
 import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+esm';
 
 (() => {
-  const APP_VERSION = '28'; // súbelo junto con CACHE en sw.js en cada cambio
+  const APP_VERSION = '29'; // súbelo junto con CACHE en sw.js en cada cambio
   const $ = id => document.getElementById(id);
   const chatEl = $('chat');
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -39,11 +39,14 @@ import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+es
 
   // ---------- Estado visual ----------
   // ---------- Diagnóstico (Ajustes → Diagnóstico) ----------
-  const diag = [];
+  // Se conserva entre aperturas de la app, para ver también lo que pasó en los intentos anteriores.
+  const diag = load('eb-diag', []);
+  if (diag.length) diag.push('──────── nueva apertura ────────');
   function log(msg) {
-    const line = new Date().toLocaleTimeString('es', { hour12: false }) + '  ' + msg;
+    const line = new Date().toLocaleString('es', { hour12: false, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '  ' + msg;
     diag.push(line);
-    if (diag.length > 60) diag.shift();
+    while (diag.length > 120) diag.shift();
+    store('eb-diag', diag);
     console.log('[EB]', msg);
     const pre = document.getElementById('diagLog');
     if (pre) pre.textContent = diag.join('\n');
