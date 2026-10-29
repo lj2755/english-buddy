@@ -3,7 +3,7 @@
 import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+esm';
 
 (() => {
-  const APP_VERSION = '31'; // súbelo junto con CACHE en sw.js en cada cambio
+  const APP_VERSION = '32'; // súbelo junto con CACHE en sw.js en cada cambio
   const $ = id => document.getElementById(id);
   const chatEl = $('chat');
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -376,6 +376,17 @@ ${facts}`;
     return out;
   }
 
+  // Lo que lleva escrito de "reply", aunque todavía no esté terminado.
+  function partialReply(partial) {
+    const m = /"reply"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(partial);
+    if (!m) return null;
+    let t = m[1];
+    if (t.endsWith('\\')) t = t.slice(0, -1);
+    try { return JSON.parse('"' + t + '"'); } catch { return null; }
+  }
+  // Hasta dónde llegan las frases completas (terminadas en . ! ? … seguidas de espacio).
+  const completeUpTo = t => { const m = /^[\s\S]*[.!?…](?=\s)/.exec(t); return m ? m[0].length : 0; };
+
   // Saca el texto de "reply" en cuanto el modelo termina de escribirlo, para que Mia hable antes.
   function earlyReply(partial) {
     const m = /"reply"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(partial);
@@ -528,29 +539,58 @@ ${facts}`;
 
   let lastMia = '';
   const timing = { lastWord: 0, micClosed: 0, sent: 0 }; // para medir dónde se va el tiempo
-  function speak(text, { slow = false, after } = {}) {
-    text = plain(text);
-    if (!('speechSynthesis' in window) || !text) { after?.(); return; }
-    speechSynthesis.cancel();
+  function makeUtterance(text, slow = false) {
     const u = new SpeechSynthesisUtterance(text);
     const lang = detectLang(text) || prefs.lang;
     const v = pickVoice(lang);
     if (v) { u.voice = v; u.lang = v.lang; } else u.lang = lang === 'es' ? 'es-US' : 'en-US';
     u.rate = slow ? Math.max(0.6, prefs.rate - 0.2) : prefs.rate;
-    u.onstart = () => {
-      setState('speaking'); mouth.start();
-      if (timing.sent) {
-        const now = performance.now();
-        log(`Mia empezó a hablar: ${((now - timing.sent) / 1000).toFixed(1)} s después de enviar tu frase` +
-          (timing.lastWord ? ` (${((now - timing.lastWord) / 1000).toFixed(1)} s desde tu última palabra)` : '') +
-          ` · voz: ${u.voice?.name || 'automática'}${u.voice && !u.voice.localService ? ' (por internet)' : ''}`);
-        timing.sent = 0;
-      }
-    };
+    return u;
+  }
+  function onSpeechStart(u) {
+    setState('speaking'); mouth.start();
+    if (timing.sent) {
+      const now = performance.now();
+      log(`Mia empezó a hablar: ${((now - timing.sent) / 1000).toFixed(1)} s después de enviar tu frase` +
+        (timing.lastWord ? ` (${((now - timing.lastWord) / 1000).toFixed(1)} s desde tu última palabra)` : '') +
+        ` · voz: ${u.voice?.name || 'automática'}${u.voice && !u.voice.localService ? ' (por internet)' : ''}`);
+      timing.sent = 0;
+    }
+  }
+  function speak(text, { slow = false, after } = {}) {
+    text = plain(text);
+    if (!('speechSynthesis' in window) || !text) { after?.(); return; }
+    speechSynthesis.cancel();
+    const u = makeUtterance(text, slow);
+    u.onstart = () => onSpeechStart(u);
     const done = () => { mouth.stop(); if (state === 'speaking') setState('idle'); after?.(); };
     u.onend = done;
     u.onerror = done;
     speechSynthesis.speak(u);
+  }
+
+  // Mia dice cada frase en cuanto la IA termina de escribirla, sin esperar la respuesta completa.
+  function createSpeaker(after) {
+    let pending = 0, ended = false, closed = false;
+    const finish = () => {
+      if (!ended || pending > 0 || closed) return;
+      closed = true;
+      mouth.stop(); if (state === 'speaking') setState('idle');
+      after?.();
+    };
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    return {
+      say(text) {
+        text = plain(text);
+        if (!text || !('speechSynthesis' in window)) return;
+        pending++;
+        const u = makeUtterance(text);
+        u.onstart = () => onSpeechStart(u);
+        u.onend = u.onerror = () => { pending--; finish(); };
+        speechSynthesis.speak(u);
+      },
+      end() { ended = true; finish(); },
+    };
   }
 
   // ---------- Mia: video en reposo / hablando ----------
@@ -906,24 +946,28 @@ ${facts}`;
       // El modelo pequeño a veces responde en inglés a un mensaje en español: se le indica en cada turno.
       // Escrita en el idioma de la respuesta: a los modelos pequeños les ayuda a no cambiar de idioma.
       userMsg.content += (detectLang(text) || prefs.lang) === 'es'
-        ? '\n\n[Nota para Mia: responde en español, como Mia, una persona real con sus propios gustos y opiniones. Tu amigo no es Mia.]'
-        : '\n\n[Note for Mia: reply in English, as Mia, a real person with your own tastes and opinions. Your friend is not Mia.]';
+        ? '\n\n[Nota para Mia: responde en español, como Mia.]'
+        : '\n\n[Note for Mia: reply in English, as Mia.]';
     }
     messages.push(userMsg);
 
-    let spokenEarly = null, miaBubble = null;
+    let miaBubble = null, spokenLen = 0, current = '', replyDone = false;
+    const speaker = createSpeaker(() => { if (prefs.handsFree && state === 'idle') setTimeout(startListening, 300); });
     try {
       const raw = await llmChat(messages, {
         format: RESPONSE_SCHEMA,
         onChunk: partial => {
-          if (spokenEarly) return;
-          const reply = asMia(earlyReply(partial));
-          if (!reply) return;
-          spokenEarly = reply;
-          typing.remove();
-          miaBubble = addMia(reply);
-          setState('idle');
-          speak(reply, { after: () => { if (prefs.handsFree && state === 'idle') setTimeout(startListening, 300); } });
+          if (replyDone) return;
+          const cur = partialReply(partial);
+          if (!cur) return;
+          current = cur;
+          if (!miaBubble) { typing.remove(); miaBubble = addMia(''); setState('idle'); }
+          miaBubble.querySelector('.bubble').textContent = plain(asMia(cur));
+          scrollDown();
+          replyDone = earlyReply(partial) != null;
+          const upTo = replyDone ? cur.length : completeUpTo(cur);
+          if (upTo > spokenLen) { speaker.say(asMia(cur.slice(spokenLen, upTo))); spokenLen = upTo; }
+          if (replyDone) speaker.end();
         },
       });
       const r = parseResult(raw);
@@ -931,12 +975,16 @@ ${facts}`;
         chatSession.msgs.push(userMsg, { role: 'assistant', content: lastRaw });
         if (chatSession.msgs.length > MAX_SESSION_MSGS) resetSession(); // conversación muy larga: se empieza de nuevo
       }
-      if (!spokenEarly) {
+      if (!miaBubble) {
         typing.remove();
         setState('idle');
         addMia(r.reply);
-        speak(r.reply, { after: () => { if (prefs.handsFree) setTimeout(startListening, 300); } });
+        speaker.say(r.reply);
+      } else {
+        miaBubble.querySelector('.bubble').textContent = plain(r.reply);
+        if (!replyDone && current.length > spokenLen) speaker.say(asMia(current.slice(spokenLen)));
       }
+      speaker.end();
       lastMia = r.reply;
       if (online?.source) {
         const lastMiaMsg = [...chatEl.querySelectorAll('.msg.mia')].pop();
@@ -953,6 +1001,7 @@ ${facts}`;
       setTimeout(summarizeOld, 4000);
     } catch (e) {
       typing.remove();
+      speaker.end();
       setState('idle');
       log('Error al responder: ' + errText(e));
       addError(e?.message || errText(e));
