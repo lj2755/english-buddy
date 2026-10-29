@@ -3,6 +3,7 @@
 import * as webllm from 'https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/+esm';
 
 (() => {
+  const APP_VERSION = '27'; // súbelo junto con CACHE en sw.js en cada cambio
   const $ = id => document.getElementById(id);
   const chatEl = $('chat');
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1071,5 +1072,8 @@ ${facts}`;
   renderHistory();
   renderMemory();
   checkGPU();
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  // Busca versiones nuevas cada vez que se abre la app (sin la copia temporal del navegador).
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => {});
+  $('appVersion').textContent = 'versión ' + APP_VERSION;
+  log('English Buddy versión ' + APP_VERSION);
 })();
